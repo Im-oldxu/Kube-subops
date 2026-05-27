@@ -119,18 +119,115 @@
     "check_target": "mainline"
   },
   "parallel_execution": {
-    "enabled": false,
-    "stage": "idle",
-    "mode": "parallel-capable",
-    "current_feature": "",
-    "analysis_summary": "当前项目已完成 PRD、架构/API/数据库、UI 交接和 Sub Admin 前端模板基线复制；frontend/ 已存在并通过 typecheck / build。下一步建议执行 /git-bootstrap 保存模板基线，再进入 /parallel-dev 或继续 /dev-frontend 做业务页面。",
-    "task_count": 0,
-    "integration_status": "idle",
+    "enabled": true,
+    "stage": "planned",
+    "mode": "manual-worktree",
+    "parallel_strategy": "frontend-first-contract-lock",
+    "current_feature": "k8s-console-contract-lock",
+    "analysis_summary": "当前项目已完成 PRD、架构/API/数据库、UI 交接和 Sub Admin 前端模板基线复制；模板基线已保存为 tag template/sub-admin-baseline。并行策略采用 frontend-first-contract-lock，第一段只启动前端业务页面与 UI Steward，锁定路由、页面、service/adapter、mock/ViewModel、权限降级和高风险确认契约后再启动后端实现。",
+    "task_count": 3,
+    "integration_status": "planned",
     "fallback_to_serial": false,
-    "last_merge_summary": "无待集成并行工作包。",
+    "last_merge_summary": "尚未开始合并；待前端与 UI Steward 工作包完成后，由 integration/frontend-contract-lock 收口。",
     "cleanup_status": "idle",
-    "cleanup_summary": "无待清理临时分支或 worktree。",
-    "tasks": []
+    "cleanup_summary": "临时 worktree 和 feature/integration 分支需在 /integrate 与 /check 通过并确认合回主干后再清理。",
+    "tasks": [
+      {
+        "feature_id": "frontend-k8s-console",
+        "role": "frontend",
+        "branch": "feature/frontend-k8s-console",
+        "worktree": "../kube-subops-frontend",
+        "status": "planned",
+        "goal": "落地正式 Kubernetes 导航、资源页、详情页、YAML、日志/终端入口、mock/service/ViewModel 和前端契约锁定。",
+        "write_scope": [
+          "frontend/",
+          "spec/开发进度.md",
+          "spec/状态.json"
+        ],
+        "forbidden_scope": [
+          "backend/",
+          "API 主契约",
+          "数据库主契约",
+          "Sub Admin 固定设置页删除或改名"
+        ],
+        "required_facts": [
+          "spec/UI原型设计.md",
+          "spec/API设计.md",
+          "spec/需求文档.md",
+          "frontend/"
+        ],
+        "minimum_validation": [
+          "corepack pnpm run typecheck",
+          "corepack pnpm run build",
+          "核心路由 smoke"
+        ],
+        "delivery_signal": "正式导航、资源通用页、专项页入口、mock/service/adapter 和高风险确认交互形成稳定前端契约。",
+        "contract_impact": "锁定前端 service/adapter、mock/ViewModel、页面路由、状态枚举、权限降级和高风险确认载荷。"
+      },
+      {
+        "feature_id": "ui-steward-k8s-console",
+        "role": "ui-steward",
+        "branch": "feature/ui-steward-k8s-console",
+        "worktree": "../kube-subops-ui-steward",
+        "status": "planned",
+        "goal": "审查 Sub Admin 模板一致性、侧栏边界、固定设置页、视觉漂移、交互状态和高风险操作入口。",
+        "write_scope": [
+          "默认只检查",
+          "必要修复限于 frontend/ 模板漂移"
+        ],
+        "forbidden_scope": [
+          "backend/",
+          "PRD/架构/API/数据库主契约",
+          "第二套 UI 壳或 HTTP client"
+        ],
+        "required_facts": [
+          "spec/UI原型设计.md",
+          "spec/API设计.md",
+          "frontend/",
+          ".codex/skills/product-orch/templates/facts/sub-admin.json"
+        ],
+        "minimum_validation": [
+          "导航与路由复核",
+          "设置页固定契约复核",
+          "权限态与高风险确认复核"
+        ],
+        "delivery_signal": "输出 UI Steward 检查结论，必要时提交限定范围修复。",
+        "contract_impact": "不改变业务主契约，只约束模板复用、导航裁剪和页面交互一致性。"
+      },
+      {
+        "feature_id": "integration-contract-lock",
+        "role": "integration",
+        "branch": "integration/frontend-contract-lock",
+        "worktree": "../kube-subops-integration",
+        "status": "planned",
+        "goal": "合并前端与 UI Steward 工作包，验证前端契约锁定，并准备后端开发启动条件。",
+        "write_scope": [
+          "合并冲突处理",
+          "frontend/",
+          "必要 spec 状态同步"
+        ],
+        "forbidden_scope": [
+          "未确认合回 main",
+          "正式发布 tag",
+          "部署交付包"
+        ],
+        "required_facts": [
+          "spec/UI原型设计.md",
+          "spec/API设计.md",
+          "spec/开发进度.md",
+          "feature/frontend-k8s-console",
+          "feature/ui-steward-k8s-console"
+        ],
+        "minimum_validation": [
+          "合并冲突清零",
+          "corepack pnpm run typecheck",
+          "corepack pnpm run build",
+          "前端契约 smoke"
+        ],
+        "delivery_signal": "integration/frontend-contract-lock 可交给 /integrate 做前端契约锁定收口。",
+        "contract_impact": "锁定前端调用期望，后端可据此实现 API、数据库和 Kubernetes adapter。"
+      }
+    ]
   },
   "delivery_status": {
     "需求状态": "已完成（当前版本）",
