@@ -36,6 +36,21 @@ let preservedDeploymentProbeMap: Record<string, {
   startupProbe: Record<string, unknown>
 }> = {}
 
+function resetPreservedPodSpecFields() {
+  preservedDeploymentPodSpec = {}
+  preservedDeploymentContainer = {}
+  preservedDeploymentContainerMap = {}
+  preservedDeploymentVolumes = []
+  preservedDeploymentVolumeMap = {}
+  preservedDeploymentAppVolumeMountMap = {}
+  preservedDeploymentInitContainerMap = {}
+  preservedDeploymentInitVolumeMountMap = {}
+  preservedDeploymentReadinessProbe = {}
+  preservedDeploymentLivenessProbe = {}
+  preservedDeploymentStartupProbe = {}
+  preservedDeploymentProbeMap = {}
+}
+
 function cloneDefaults(defaults: Partial<CreateFormState>) {
   return JSON.parse(JSON.stringify(defaults)) as Partial<CreateFormState>
 }
@@ -198,7 +213,7 @@ function readVolumeMountEntries(
       sourceName: String(configMap.name ?? secret.secretName ?? pvc.claimName ?? name),
       mountPath: String(mountItem.mountPath ?? ''),
       subPath: String(mountItem.subPath ?? ''),
-      readOnly: Boolean(mountItem.readOnly ?? type !== 'emptyDir')
+      readOnly: Boolean(mountItem.readOnly)
     }
   }) as VolumeMountEntry[]
 }
@@ -390,12 +405,17 @@ function buildVolumeMounts(mounts: VolumeMountEntry[], preservedMap: Record<stri
     .filter((item) => item.name.trim() && item.mountPath.trim())
     .map((item) => {
       const name = item.name.trim()
+      const preservedMount = { ...preservedMap[name] }
+      delete preservedMount.name
+      delete preservedMount.mountPath
+      delete preservedMount.subPath
+      delete preservedMount.readOnly
       return compactObject({
-        ...preservedMap[name],
+        ...preservedMount,
         name,
         mountPath: item.mountPath.trim(),
         subPath: item.subPath.trim() || undefined,
-        readOnly: (item.readOnly || item.type === 'configMap' || item.type === 'secret') ? true : undefined
+        readOnly: item.readOnly ? true : undefined
       })
     })
 }
@@ -621,14 +641,7 @@ function buildAppContainers(form: CreateFormState) {
     })
 }
 
-function deploymentObject(form: CreateFormState) {
-  const metadataLabels = pairsToRecord(form.labels)
-  const metadataAnnotations = pairsToRecord(form.annotations)
-  const selectorLabels = { app: form.name }
-  const templateLabels = {
-    ...selectorLabels,
-    ...metadataLabels
-  }
+function podSpecObject(form: CreateFormState) {
   const nodeSelector = pairsToRecord(form.nodeSelector)
   const affinity = buildAffinity(form)
   const tolerations = buildTolerations(form.tolerations)
@@ -645,6 +658,48 @@ function deploymentObject(form: CreateFormState) {
   ])
   const volumes = [...preservedDeploymentVolumes, ...configuredVolumes]
   const initContainers = buildInitContainers(form)
+  return {
+    ...preservedDeploymentPodSpec,
+    serviceAccountName: form.serviceAccountName || undefined,
+    automountServiceAccountToken: form.automountServiceAccountToken === '' ? undefined : form.automountServiceAccountToken === 'true',
+    imagePullSecrets: imagePullSecrets.length ? imagePullSecrets : undefined,
+    securityContext: buildPodSecurityContext(form),
+    hostNetwork: optionalBoolean(form.hostNetwork),
+    dnsPolicy: form.dnsPolicy || undefined,
+    dnsConfig,
+    nodeSelector: Object.keys(nodeSelector).length ? nodeSelector : undefined,
+    affinity,
+    tolerations: tolerations.length ? tolerations : undefined,
+    volumes: volumes.length ? volumes : undefined,
+    initContainers: initContainers.length ? initContainers : undefined,
+    containers: appContainers
+  }
+}
+
+function podObject(form: CreateFormState) {
+  const metadataLabels = pairsToRecord(form.labels)
+  const metadataAnnotations = pairsToRecord(form.annotations)
+  return {
+    apiVersion: 'v1',
+    kind: 'Pod',
+    metadata: {
+      name: form.name,
+      namespace: form.namespace,
+      labels: nonEmptyObject(metadataLabels),
+      annotations: nonEmptyObject(metadataAnnotations)
+    },
+    spec: podSpecObject(form)
+  }
+}
+
+function deploymentObject(form: CreateFormState) {
+  const metadataLabels = pairsToRecord(form.labels)
+  const metadataAnnotations = pairsToRecord(form.annotations)
+  const selectorLabels = { app: form.name }
+  const templateLabels = {
+    ...selectorLabels,
+    ...metadataLabels
+  }
   return {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -676,22 +731,7 @@ function deploymentObject(form: CreateFormState) {
         metadata: {
           labels: templateLabels
         },
-        spec: {
-          ...preservedDeploymentPodSpec,
-          serviceAccountName: form.serviceAccountName || undefined,
-          automountServiceAccountToken: form.automountServiceAccountToken === '' ? undefined : form.automountServiceAccountToken === 'true',
-          imagePullSecrets: imagePullSecrets.length ? imagePullSecrets : undefined,
-          securityContext: buildPodSecurityContext(form),
-          hostNetwork: optionalBoolean(form.hostNetwork),
-          dnsPolicy: form.dnsPolicy || undefined,
-          dnsConfig,
-          nodeSelector: Object.keys(nodeSelector).length ? nodeSelector : undefined,
-          affinity,
-          tolerations: tolerations.length ? tolerations : undefined,
-          volumes: volumes.length ? volumes : undefined,
-          initContainers: initContainers.length ? initContainers : undefined,
-          containers: appContainers
-        }
+        spec: podSpecObject(form)
       }
     }
   }
@@ -781,6 +821,83 @@ const commonFields = [
 ] satisfies CreateSchema['sections'][number]['fields']
 
 export const createSchemas: Record<string, CreateSchema> = {
+  pods: {
+    resourceType: 'pods',
+    kind: 'Pod',
+    apiVersion: 'v1',
+    title: 'Pod 表单',
+    summary: '适合创建单个 Pod，支持普通容器、Init 容器、Pod 安全、网络、存储卷和调度配置。',
+    defaults: {
+      labels: defaultDeploymentLabels(),
+      containerName: 'app',
+      image: 'nginx:1.27',
+      imagePullPolicy: 'IfNotPresent',
+      cpuRequest: '',
+      memoryRequest: '',
+      cpuLimit: '',
+      memoryLimit: '',
+      readinessPath: '',
+      readinessPort: 8080,
+      readinessInitialDelaySeconds: 10,
+      readinessPeriodSeconds: 10,
+      readinessTimeoutSeconds: 1,
+      readinessFailureThreshold: 3,
+      readinessSuccessThreshold: 1,
+      livenessPath: '',
+      livenessPort: 8080,
+      livenessInitialDelaySeconds: 30,
+      livenessPeriodSeconds: 10,
+      livenessTimeoutSeconds: 1,
+      livenessFailureThreshold: 3,
+      livenessSuccessThreshold: 1,
+      startupPath: '',
+      startupPort: 8080,
+      startupInitialDelaySeconds: 0,
+      startupPeriodSeconds: 10,
+      startupTimeoutSeconds: 1,
+      startupFailureThreshold: 30,
+      startupSuccessThreshold: 1,
+      ports: [],
+      env: [],
+      imagePullSecrets: '',
+      runAsUser: null,
+      runAsGroup: null,
+      fsGroup: null,
+      runAsNonRoot: '',
+      seccompProfileType: '',
+      seccompLocalhostProfile: '',
+      containerRunAsUser: null,
+      containerRunAsGroup: null,
+      containerRunAsNonRoot: '',
+      privileged: '',
+      allowPrivilegeEscalation: '',
+      readOnlyRootFilesystem: '',
+      nodeSelector: [],
+      nodeAffinity: [],
+      podAffinity: [],
+      podAntiAffinity: [],
+      tolerations: [],
+      hostNetwork: '',
+      dnsPolicy: '',
+      dnsNameservers: '',
+      dnsSearches: '',
+      dnsOptions: [],
+      podVolumes: [],
+      volumeMounts: [],
+      appContainers: [],
+      initContainers: [],
+      lifecycleHooks: []
+    },
+    sections: [
+      { title: '基本信息', fields: commonFields },
+      {
+        title: 'Pod 配置',
+        description: 'Pod spec 级配置入口，包含容器、网络、安全、存储卷和调度。',
+        fields: []
+      }
+    ],
+    toObject: podObject
+  },
   deployments: {
     resourceType: 'deployments',
     kind: 'Deployment',
@@ -1006,20 +1123,7 @@ export const createSchemas: Record<string, CreateSchema> = {
 export function createDefaultForm(resourceType: string, kind: string, namespace: string): CreateFormState {
   const schema = createSchemas[resourceType]
   const defaults = cloneDefaults(schema?.defaults ?? {})
-  if (resourceType === 'deployments') {
-    preservedDeploymentPodSpec = {}
-    preservedDeploymentContainer = {}
-    preservedDeploymentContainerMap = {}
-    preservedDeploymentVolumes = []
-    preservedDeploymentVolumeMap = {}
-    preservedDeploymentAppVolumeMountMap = {}
-    preservedDeploymentInitContainerMap = {}
-    preservedDeploymentInitVolumeMountMap = {}
-    preservedDeploymentReadinessProbe = {}
-    preservedDeploymentLivenessProbe = {}
-    preservedDeploymentStartupProbe = {}
-    preservedDeploymentProbeMap = {}
-  }
+  if (resourceType === 'deployments' || resourceType === 'pods') resetPreservedPodSpecFields()
   return {
     name: '',
     namespace,
@@ -1111,9 +1215,11 @@ export function applyObjectToForm(form: CreateFormState, object: Record<string, 
   form.labels = stringRecordToPairs(asRecord(metadata.labels))
   form.annotations = stringRecordToPairs(asRecord(metadata.annotations))
 
-  if (resourceType === 'deployments') {
-    form.replicas = Number(readPath(object, ['spec', 'replicas']) ?? form.replicas)
-    const podSpec = asRecord(readPath(object, ['spec', 'template', 'spec']))
+  if (resourceType === 'deployments' || resourceType === 'pods') {
+    if (resourceType === 'deployments') form.replicas = Number(readPath(object, ['spec', 'replicas']) ?? form.replicas)
+    const podSpec = resourceType === 'pods'
+      ? asRecord(readPath(object, ['spec']))
+      : asRecord(readPath(object, ['spec', 'template', 'spec']))
     const containers = Array.isArray(podSpec.containers) ? podSpec.containers.map((item) => asRecord(item)) : []
     const container = containers[0] ?? {}
     const resources = asRecord(container.resources)
@@ -1229,15 +1335,17 @@ export function applyObjectToForm(form: CreateFormState, object: Record<string, 
     form.privileged = containerSecurityContext.privileged === undefined ? '' : String(Boolean(containerSecurityContext.privileged)) as CreateFormState['privileged']
     form.allowPrivilegeEscalation = containerSecurityContext.allowPrivilegeEscalation === undefined ? '' : String(Boolean(containerSecurityContext.allowPrivilegeEscalation)) as CreateFormState['allowPrivilegeEscalation']
     form.readOnlyRootFilesystem = containerSecurityContext.readOnlyRootFilesystem === undefined ? '' : String(Boolean(containerSecurityContext.readOnlyRootFilesystem)) as CreateFormState['readOnlyRootFilesystem']
-    const strategy = asRecord(readPath(object, ['spec', 'strategy']))
-    const rollingUpdate = asRecord(strategy.rollingUpdate)
-    form.strategyType = strategy.type === 'RollingUpdate' || strategy.type === 'Recreate' ? strategy.type : ''
-    form.maxSurge = String(rollingUpdate.maxSurge ?? '')
-    form.maxUnavailable = String(rollingUpdate.maxUnavailable ?? '')
-    form.minReadySeconds = readPath(object, ['spec', 'minReadySeconds']) === undefined ? null : Number(readPath(object, ['spec', 'minReadySeconds']))
-    form.revisionHistoryLimit = readPath(object, ['spec', 'revisionHistoryLimit']) === undefined ? null : Number(readPath(object, ['spec', 'revisionHistoryLimit']))
-    form.progressDeadlineSeconds = readPath(object, ['spec', 'progressDeadlineSeconds']) === undefined ? null : Number(readPath(object, ['spec', 'progressDeadlineSeconds']))
-    form.paused = Boolean(readPath(object, ['spec', 'paused']) ?? false)
+    if (resourceType === 'deployments') {
+      const strategy = asRecord(readPath(object, ['spec', 'strategy']))
+      const rollingUpdate = asRecord(strategy.rollingUpdate)
+      form.strategyType = strategy.type === 'RollingUpdate' || strategy.type === 'Recreate' ? strategy.type : ''
+      form.maxSurge = String(rollingUpdate.maxSurge ?? '')
+      form.maxUnavailable = String(rollingUpdate.maxUnavailable ?? '')
+      form.minReadySeconds = readPath(object, ['spec', 'minReadySeconds']) === undefined ? null : Number(readPath(object, ['spec', 'minReadySeconds']))
+      form.revisionHistoryLimit = readPath(object, ['spec', 'revisionHistoryLimit']) === undefined ? null : Number(readPath(object, ['spec', 'revisionHistoryLimit']))
+      form.progressDeadlineSeconds = readPath(object, ['spec', 'progressDeadlineSeconds']) === undefined ? null : Number(readPath(object, ['spec', 'progressDeadlineSeconds']))
+      form.paused = Boolean(readPath(object, ['spec', 'paused']) ?? false)
+    }
     form.nodeSelector = stringRecordToPairs(asRecord(podSpec.nodeSelector))
     const affinity = asRecord(podSpec.affinity)
     const nodeTerms = readPath(affinity, ['nodeAffinity', 'requiredDuringSchedulingIgnoredDuringExecution', 'nodeSelectorTerms'])
@@ -1328,7 +1436,7 @@ export function applyObjectToForm(form: CreateFormState, object: Record<string, 
             sourceName: String(configMap.name ?? secret.secretName ?? pvc.claimName ?? name),
             mountPath: String(mountItem.mountPath ?? ''),
             subPath: String(mountItem.subPath ?? ''),
-            readOnly: Boolean(mountItem.readOnly ?? type !== 'emptyDir')
+            readOnly: Boolean(mountItem.readOnly)
           }
         }) as VolumeMountEntry[],
         ...readContainerSecurityContext(initContainer)
@@ -1379,7 +1487,7 @@ export function validateCreateForm(form: CreateFormState, resourceType: string) 
   if (!form.name.trim()) errors.push('名称不能为空。')
   if (!form.namespace.trim() && resourceType !== 'storage-classes' && resourceType !== 'persistent-volumes') errors.push('Namespace 不能为空。')
 
-  if (resourceType === 'deployments') {
+  if (resourceType === 'deployments' || resourceType === 'pods') {
     const appContainers = appContainersForForm(form)
     if (!appContainers.length) errors.push('至少需要一个普通容器。')
     const volumeNames = new Set<string>()

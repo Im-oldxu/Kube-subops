@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import Select from '@/components/common/Select.vue'
 import { Icon } from '@/components/icons'
 import type { Column } from '@/components/common/types'
+import KubeMonitoringChart from './KubeMonitoringChart.vue'
 import {
   applyObjectToForm,
   createDefaultForm,
@@ -13,13 +14,14 @@ import {
   validateCreateForm
 } from '@/template/kube-create/schemas'
 import type { AppContainerEntry, CreateField, CreateFieldOption, CreateFormState, InitContainerEntry, KeyValuePair, PodVolumeEntry, PortEntry, VolumeMountEntry } from '@/template/kube-create/types'
-import { parseKubeYaml, stringifyKubeObject } from '@/template/kube-create/yaml'
+import { asRecord, parseKubeYaml, parseKubeYamlDocuments, readPath, stringifyKubeObject, stringifyKubeObjects } from '@/template/kube-create/yaml'
 import * as templateApi from '@/template/api'
 import * as templateData from '@/template/data'
 
 type ApiFn<TArgs extends unknown[], TResult> = (...args: TArgs) => Promise<TResult> | TResult
-type ResourceStatus = 'Running' | 'Ready' | 'Pending' | 'Warning' | 'Error' | 'Succeeded' | 'Bound' | 'Active' | 'Terminating'
-type DetailTab = 'overview' | 'status' | 'metadata' | 'relations' | 'events' | 'yaml'
+type ResourceStatus = 'Running' | 'Ready' | 'Pending' | 'Warning' | 'Error' | 'Succeeded' | 'Bound' | 'Active' | 'Available' | 'Degraded' | 'Complete' | 'CrashLoopBackOff' | 'Terminating'
+type DetailTab = 'overview' | 'status' | 'metadata' | 'relations' | 'mounts' | 'monitoring' | 'events' | 'yaml'
+type ContainerDetailTab = 'details' | 'env' | 'mounts'
 type EditMode = 'create' | 'edit'
 type CreateMode = 'form' | 'yaml'
 type ResourcePanel = 'cpu' | 'memory'
@@ -39,15 +41,26 @@ type RelatedCreateType = 'configmaps' | 'secrets' | 'persistent-volume-claims'
 type RelatedTargetKind = 'pod-volume' | 'app-mount' | 'image-pull-secret'
 type CreateDialogSize = 'regular' | 'wide'
 type YamlValidationStatus = 'ok' | 'warning' | 'error' | 'info'
+type MonitoringRange = '15m' | '30m' | '1h' | '6h' | '12h' | 'today'
+type MonitoringStep = '15s' | '30s' | '60s' | '5m' | '15m'
 type ConfigSourceOption = {
   label: string
   value: string
   secretType?: string
   usage?: 'volume' | 'imagePullSecret' | 'both'
 }
+type RelatedResourceItem = {
+  kind: string
+  name: string
+  namespace?: string
+  status?: string
+  resourceType?: string
+  relation?: string
+  ready?: string
+}
 type ConfirmAction =
   | 'delete'
-  | 'apply-yaml'
+  | 'bulk-delete'
   | 'scale'
   | 'restart'
   | 'update-image'
@@ -93,15 +106,27 @@ interface KubeResourceItem {
   status: ResourceStatus
   age: string
   ready?: string
+  restarts?: number
+  nodeName?: string
+  podIP?: string
+  cpuUsage?: string
+  memoryUsage?: string
+  cpuRequest?: string
+  cpuLimit?: string
+  memoryRequest?: string
+  memoryLimit?: string
+  resourceType?: string
   node?: string
   image?: string
+  images?: string[]
   replicas?: number
   desiredReplicas?: number
   owner?: string
-  related: Array<{ kind: string; name: string; namespace?: string; status?: string }>
+  ownerReferences?: Array<{ kind: string; name: string; resourceType?: string }>
+  related: RelatedResourceItem[]
   events: Array<{ id: string; type: 'Normal' | 'Warning'; reason: string; message: string; lastSeen: string }>
   yaml: string
-  details: Record<string, string>
+  details: Record<string, string | number | boolean | string[] | undefined>
 }
 
 interface PendingConfirm {
@@ -109,6 +134,7 @@ interface PendingConfirm {
   title: string
   message: string
   resource?: KubeResourceItem
+  resources?: KubeResourceItem[]
   payload?: Record<string, unknown>
 }
 
@@ -125,11 +151,12 @@ interface YamlValidationItem {
 }
 
 const route = useRoute()
+const router = useRouter()
 const apiBag = templateApi as Record<string, unknown>
 const dataBag = templateData as Record<string, unknown>
 
 const resourceDefinitions: Record<string, ResourceDefinition> = {
-  pods: { type: 'pods', title: 'Pod', kind: 'Pod', namespaced: true, description: 'Pod 列表、详情、容器、日志、实时日志、终端和 YAML。', pod: true },
+  pods: { type: 'pods', title: 'Pod', kind: 'Pod', namespaced: true, description: 'Pod 列表、详情、容器、实时日志、终端和 YAML。', pod: true },
   deployments: { type: 'deployments', title: 'Deployment', kind: 'Deployment', namespaced: true, description: 'Deployment 工作负载管理。', workload: true, supportsScale: true, supportsImageUpdate: true, supportsRollback: true },
   statefulsets: { type: 'statefulsets', title: 'StatefulSet', kind: 'StatefulSet', namespaced: true, description: 'StatefulSet 工作负载管理。', workload: true, supportsScale: true, supportsImageUpdate: true, supportsRollback: true },
   daemonsets: { type: 'daemonsets', title: 'DaemonSet', kind: 'DaemonSet', namespaced: true, description: 'DaemonSet 节点守护进程管理。', workload: true, supportsImageUpdate: true, supportsRollback: true },
@@ -184,8 +211,40 @@ const routeAliases: Record<string, string> = {
   Events: 'events'
 }
 
+const resourceRoutes: Record<string, string> = {
+  pods: '/pods',
+  deployments: '/workloads/deployments',
+  statefulsets: '/workloads/statefulsets',
+  daemonsets: '/workloads/daemonsets',
+  replicasets: '/workloads/replicasets',
+  jobs: '/workloads/jobs',
+  cronjobs: '/workloads/cronjobs',
+  services: '/network/services',
+  ingresses: '/network/ingresses',
+  endpoints: '/network/endpoints',
+  'endpoint-slices': '/network/endpoint-slices',
+  'network-policies': '/network/network-policies',
+  configmaps: '/config/configmaps',
+  secrets: '/config/secrets',
+  'storage-classes': '/storage/storage-classes',
+  'persistent-volumes': '/storage/persistent-volumes',
+  'persistent-volume-claims': '/storage/persistent-volume-claims',
+  'service-accounts': '/access/service-accounts',
+  roles: '/access/roles',
+  'cluster-roles': '/access/cluster-roles',
+  'role-bindings': '/access/role-bindings',
+  'cluster-role-bindings': '/access/cluster-role-bindings',
+  nodes: '/other/nodes',
+  namespaces: '/other/namespaces',
+  events: '/other/events'
+}
+
+const kindResourceTypes: Record<string, string> = Object.fromEntries(
+  Object.values(resourceDefinitions).map((definition) => [definition.kind, definition.type])
+)
+
 const fallbackClusters: ClusterOption[] = [
-  { id: 'prod-main', name: 'prod-main' },
+  { id: 'cluster-prod', name: 'prod-east' },
   { id: 'staging', name: 'staging' },
   { id: 'dev-sandbox', name: 'dev-sandbox' }
 ]
@@ -196,19 +255,46 @@ const pageSizeOptions = [
   { label: '20 条 / 页', value: 20 },
   { label: '50 条 / 页', value: 50 }
 ]
+const monitoringRangeOptions: Array<{ label: string; value: MonitoringRange; seconds: number }> = [
+  { label: 'Last 15 min', value: '15m', seconds: 15 * 60 },
+  { label: 'Last 30 min', value: '30m', seconds: 30 * 60 },
+  { label: 'Last 1 hour', value: '1h', seconds: 60 * 60 },
+  { label: 'Last 6 hours', value: '6h', seconds: 6 * 60 * 60 },
+  { label: 'Last 12 hours', value: '12h', seconds: 12 * 60 * 60 },
+  { label: 'Today', value: 'today', seconds: 24 * 60 * 60 }
+]
+const monitoringStepOptions: Array<{ label: string; value: MonitoringStep; seconds: number }> = [
+  { label: '15 seconds', value: '15s', seconds: 15 },
+  { label: '30 seconds', value: '30s', seconds: 30 },
+  { label: '60 seconds', value: '60s', seconds: 60 },
+  { label: '5 minutes', value: '5m', seconds: 5 * 60 },
+  { label: '15 minutes', value: '15m', seconds: 15 * 60 }
+]
 
 const filters = reactive({
-  clusterId: 'prod-main',
+  clusterId: 'cluster-prod',
   namespace: 'all-namespaces',
   name: '',
   labels: '',
+  nodeName: 'all-nodes',
   status: 'all',
   keyword: ''
 })
 const clusters = ref<ClusterOption[]>(fallbackClusters)
 const resources = ref<KubeResourceItem[]>([])
 const selectedResource = ref<KubeResourceItem | null>(null)
+const selectedResourceIds = reactive(new Set<string>())
+const detailPanelOpen = ref(false)
 const activeDetailTab = ref<DetailTab>('overview')
+const detailYamlDraft = ref('')
+const detailYamlError = ref('')
+const selectedContainerName = ref('')
+const containerDetailOpen = ref(false)
+const activeContainerDetailTab = ref<ContainerDetailTab>('details')
+const activeMonitoringTarget = ref('all')
+const activeMonitoringIndex = ref<number | null>(null)
+const activeMonitoringRange = ref<MonitoringRange>('30m')
+const activeMonitoringStep = ref<MonitoringStep>('30s')
 const page = ref(1)
 const pageSize = ref(10)
 const loading = ref(false)
@@ -216,7 +302,6 @@ const errorMessage = ref('')
 const successMessage = ref('')
 const editDialogOpen = ref(false)
 const editMode = ref<EditMode>('create')
-const yamlDialogOpen = ref(false)
 const actionDialogOpen = ref(false)
 const logsDialogOpen = ref(false)
 const terminalDialogOpen = ref(false)
@@ -246,14 +331,18 @@ const collapsedSections = reactive<Record<string, boolean>>({})
 const createDialogSize = ref<CreateDialogSize>('regular')
 const yamlFontSize = ref(13)
 const activeYamlTemplate = ref<YamlTemplateId>('web')
+const activeYamlDocumentIndex = ref(0)
 const yamlTextareaRef = ref<HTMLTextAreaElement | null>(null)
 const createForm = reactive<CreateFormState>(createDefaultForm('pods', 'Pod', 'default'))
 const formErrors = ref<string[]>([])
 const yamlParseError = ref('')
 const syncingFromYaml = ref(false)
 const showLegacyAppSections = false
-const yamlDraft = ref('')
 const logsText = ref('')
+const terminalContainerName = ref('')
+const terminalCommandPreset = ref('/bin/sh')
+const terminalCustomCommand = ref('')
+const terminalSessionMessage = ref('')
 const secretPlaintext = ref<Record<string, string>>({})
 const actionForm = reactive<WorkloadActionForm>({
   action: 'scale',
@@ -276,25 +365,59 @@ const relatedFormState = reactive({
 })
 const relatedFormErrors = ref<string[]>([])
 const relatedYamlParseError = ref('')
+const hiddenColumns = reactive(new Set<string>())
+const showColumnDropdown = ref(false)
+const columnDropdownRef = ref<HTMLElement | null>(null)
+const resourceColumnStorageKey = computed(() => `kube-${currentDefinition.value.type}-hidden-columns-v2`)
+const metricsAvailable = computed(() => resources.value.some((resource) => resource.type === 'pods' && Boolean(
+  resource.cpuUsage ||
+  resource.memoryUsage ||
+  resource.details.cpuUsage ||
+  resource.details.memoryUsage
+)))
+const metricsUnavailableMessage = computed(() => '当前未返回 metrics.k8s.io 实时用量；CPU/内存只展示 requests/limits。需要实时用量时，请确认集群已安装并启用 Kubernetes Metrics Server，且 APIService v1beta1.metrics.k8s.io 为 Available。')
+const monitoringSelectedRange = computed(() => monitoringRangeOptions.find((option) => option.value === activeMonitoringRange.value) ?? monitoringRangeOptions[1])
+const monitoringSelectedStep = computed(() => monitoringStepOptions.find((option) => option.value === activeMonitoringStep.value) ?? monitoringStepOptions[1])
+const monitoringChartKey = computed(() => `${activeMonitoringRange.value}-${activeMonitoringStep.value}-${activeMonitoringTarget.value}`)
+const defaultHiddenColumnKeys = computed(() => new Set<string>(currentDefinition.value.pod ? ['namespace', 'labels'] : []))
 
-const tableColumns = computed<Column[]>(() => [
-  { key: 'name', label: '名称', sortable: true, class: 'min-w-56' },
+const baseTableColumns = computed<Column[]>(() => [
+  { key: 'select', label: '', class: 'w-12 min-w-12' },
+  { key: 'name', label: '名称', sortable: true, class: currentDefinition.value.pod ? 'min-w-64 whitespace-nowrap' : 'min-w-56 whitespace-nowrap' },
   ...(currentDefinition.value.namespaced ? [{ key: 'namespace', label: 'Namespace', sortable: true }] : []),
-  { key: 'status', label: '状态', sortable: true },
-  { key: 'ready', label: '就绪', sortable: true },
-  { key: 'labels', label: '标签' },
-  { key: 'age', label: '年龄', sortable: true },
-  { key: 'actions', label: '操作', class: 'min-w-96' }
+  { key: 'status', label: '状态', sortable: true, class: 'whitespace-nowrap' },
+  { key: 'ready', label: '就绪', sortable: true, class: 'whitespace-nowrap' },
+  ...(currentDefinition.value.pod ? [
+    { key: 'restarts', label: '重启', sortable: true, class: 'whitespace-nowrap' },
+    { key: 'podIP', label: 'Pod IP', sortable: true, class: 'min-w-32 whitespace-nowrap' },
+    { key: 'nodeName', label: '节点', sortable: true, class: 'min-w-44 whitespace-nowrap' },
+    { key: 'cpu', label: 'CPU', sortable: true, class: 'min-w-28 whitespace-nowrap' },
+    { key: 'memory', label: '内存', sortable: true, class: 'min-w-32 whitespace-nowrap' }
+  ] : []),
+  { key: 'labels', label: '标签', class: currentDefinition.value.pod ? 'min-w-56 whitespace-nowrap' : 'min-w-48' },
+  { key: 'age', label: '年龄', sortable: true, class: 'whitespace-nowrap' },
+  { key: 'actions', label: '操作', class: currentDefinition.value.pod ? 'min-w-48 whitespace-nowrap !px-2' : currentDefinition.value.type === 'deployments' ? 'min-w-72 whitespace-nowrap' : 'min-w-96' }
 ])
+const toggleableColumns = computed(() => baseTableColumns.value.filter((column) => !['select', 'actions'].includes(column.key)))
+const tableColumns = computed(() => baseTableColumns.value.filter((column) => ['select', 'actions'].includes(column.key) || !hiddenColumns.has(column.key)))
 
 const currentResourceType = computed(() => resolveResourceType())
 const currentDefinition = computed(() => resourceDefinitions[currentResourceType.value] ?? resourceDefinitions.pods)
 const createDefinition = computed(() => currentDefinition.value)
 const currentCreateSchema = computed(() => createSchemas[createDefinition.value.type])
 const visibleCreateSections = computed(() => (
-  currentCreateSchema.value?.sections.filter((section) => createDefinition.value.type !== 'deployments' || section.title !== '基本信息') ?? []
+  currentCreateSchema.value?.sections.filter((section) => {
+    if (createDefinition.value.type === 'deployments' && section.title === '基本信息') return false
+    if (usesPodSpecCreateForm.value && ['Pod 模板', 'Pod 配置'].includes(section.title)) return true
+    return true
+  }) ?? []
 ))
 const hasCreateSchema = computed(() => Boolean(currentCreateSchema.value))
+const usesPodSpecCreateForm = computed(() => createDefinition.value.type === 'deployments' || createDefinition.value.type === 'pods')
+const createPodSpecTitle = computed(() => createDefinition.value.type === 'pods' ? 'Pod 配置' : 'Pod 模板')
+const createPodSpecDescription = computed(() => createDefinition.value.type === 'pods'
+  ? '创建单个 Pod 的 spec：普通容器、Init 容器、安全、网络、存储卷和调度都会直接写入 Pod。'
+  : 'Deployment Pod 模板统一纳管普通容器与 Init 容器；这些配置会写入 spec.template。')
 const relatedResourceType = computed<RelatedCreateType>(() => relatedMountType.value === 'configMap' ? 'configmaps' : relatedMountType.value === 'secret' ? 'secrets' : 'persistent-volume-claims')
 const relatedDefinition = computed(() => resourceDefinitions[relatedResourceType.value])
 const relatedCreateSchema = computed(() => createSchemas[relatedDefinition.value.type])
@@ -313,6 +436,20 @@ const createDialogSplitClass = computed(() => (
     : '2xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.9fr)]'
 ))
 const yamlValidationItems = computed<YamlValidationItem[]>(() => validateYamlContent(formState.yaml, createDefinition.value, formState.namespace || createForm.namespace))
+const yamlDocumentSummaries = computed(() => {
+  const parsed = parseKubeYamlDocuments(formState.yaml)
+  if (!parsed.ok || !parsed.values || parsed.values.length <= 1) return []
+  return parsed.values.map((object, index) => {
+    const kind = String(object.kind ?? createDefinition.value.kind)
+    const name = yamlObjectName(object) || `未命名-${index + 1}`
+    const namespace = yamlObjectNamespace(object, '')
+    return {
+      index,
+      label: `${index + 1}. ${kind}/${name}`,
+      description: namespace ? `Namespace: ${namespace}` : 'Cluster scope / 未设置 Namespace'
+    }
+  })
+})
 const highlightedYaml = computed(() => highlightYaml(formState.yaml))
 const clusterOptions = computed(() => clusters.value.map((cluster) => ({ label: cluster.name, value: cluster.id })))
 const imagePullSecretOptions = computed(() => {
@@ -331,9 +468,46 @@ const imagePullSecretTriggerText = computed(() => {
   if (names.length === 1) return names[0]
   return `已选择 ${names.length} 个：${names.join(', ')}`
 })
+const workloadActionLabels: Record<ConfirmAction, string> = {
+  'bulk-delete': '批量删除',
+  scale: '扩缩容',
+  restart: '重启',
+  'update-image': '更新镜像',
+  rollback: '回滚',
+  delete: '删除',
+  terminal: '进入终端',
+  drain: 'drain 节点',
+  cordon: 'cordon 节点',
+  uncordon: 'uncordon 节点',
+  'reveal-secret': '查看 Secret 明文'
+}
+const workloadActionDialogTitle = computed(() => `确认${workloadActionLabels[actionForm.action] ?? '操作'}`)
+const workloadActionConfirmText = computed(() => {
+  if (!selectedResource.value) return ''
+  const target = `${selectedResource.value.kind}/${selectedResource.value.name}`
+  if (actionForm.action === 'scale') return `确认将 ${target} 调整为 ${actionForm.replicas} 个副本。`
+  if (actionForm.action === 'update-image') return `确认将 ${target} 更新为指定镜像。`
+  if (actionForm.action === 'rollback') return `确认将 ${target} 回滚到指定版本。`
+  if (actionForm.action === 'restart') return `确认重启 ${target}。`
+  return `确认执行 ${target} 操作。`
+})
 const computedNamespaceOptions = computed(() => {
   const options = currentDefinition.value.namespaced ? namespaceOptions : ['cluster-scope']
   return options.map((namespace) => ({ label: namespace, value: namespace }))
+})
+const computedNodeOptions = computed(() => {
+  const nodeNames = new Set<string>()
+  resources.value
+    .filter((item) => item.clusterId === filters.clusterId)
+    .filter((item) => item.type === 'pods')
+    .forEach((item) => {
+      const nodeName = String(item.nodeName || item.node || item.details.nodeName || '').trim()
+      if (nodeName) nodeNames.add(nodeName)
+    })
+  return [
+    { label: '全部节点', value: 'all-nodes' },
+    ...Array.from(nodeNames).sort().map((nodeName) => ({ label: nodeName, value: nodeName }))
+  ]
 })
 const filteredResources = computed(() => {
   const keyword = filters.keyword.trim().toLowerCase()
@@ -343,6 +517,7 @@ const filteredResources = computed(() => {
     .filter((item) => item.clusterId === filters.clusterId)
     .filter((item) => item.type === currentDefinition.value.type)
     .filter((item) => !currentDefinition.value.namespaced || filters.namespace === 'all-namespaces' || item.namespace === filters.namespace)
+    .filter((item) => !currentDefinition.value.pod || filters.nodeName === 'all-nodes' || String(item.nodeName || item.node || item.details.nodeName || '') === filters.nodeName)
     .filter((item) => filters.status === 'all' || item.status === filters.status)
     .filter((item) => !name || item.name.toLowerCase().includes(name))
     .filter((item) => {
@@ -351,9 +526,13 @@ const filteredResources = computed(() => {
     })
     .filter((item) => {
       if (!keyword) return true
-      return `${item.name} ${item.namespace ?? ''} ${item.kind} ${item.status}`.toLowerCase().includes(keyword)
+      return `${item.name} ${item.namespace ?? ''} ${item.kind} ${item.status} ${item.nodeName ?? ''} ${item.node ?? ''} ${item.details.nodeName ?? ''}`.toLowerCase().includes(keyword)
     })
 })
+const visibleSelectableResources = computed(() => filteredResources.value.filter(() => !currentDefinition.value.deleteDisabled))
+const selectedResources = computed(() => filteredResources.value.filter((item) => selectedResourceIds.has(item.id)))
+const allVisibleSelected = computed(() => visibleSelectableResources.value.length > 0 && visibleSelectableResources.value.every((item) => selectedResourceIds.has(item.id)))
+const someVisibleSelected = computed(() => visibleSelectableResources.value.some((item) => selectedResourceIds.has(item.id)))
 const totalPages = computed(() => Math.max(1, Math.ceil(filteredResources.value.length / pageSize.value)))
 const pagedResources = computed(() => filteredResources.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
 const detailTabs = [
@@ -361,11 +540,41 @@ const detailTabs = [
   { id: 'status', label: '状态' },
   { id: 'metadata', label: '标签与注解' },
   { id: 'relations', label: '关联资源' },
+  { id: 'mounts', label: '挂载' },
+  { id: 'monitoring', label: '监控' },
   { id: 'events', label: '事件' },
   { id: 'yaml', label: 'YAML' }
 ] as const
+const containerDetailTabs: Array<{ id: ContainerDetailTab; label: string }> = [
+  { id: 'details', label: '详情' },
+  { id: 'env', label: '环境变量' },
+  { id: 'mounts', label: '挂载' }
+]
+const visibleDetailTabs = computed(() => {
+  if (isPodResource(selectedResource.value)) {
+    return detailTabs.filter((tab) => ['overview', 'mounts', 'monitoring', 'events', 'yaml'].includes(tab.id))
+  }
+  if (isDeploymentResource(selectedResource.value)) {
+    return detailTabs.filter((tab) => ['overview', 'monitoring', 'events', 'yaml'].includes(tab.id))
+  }
+  return detailTabs
+})
+const resourceDetailTitle = computed(() => selectedResource.value ? `${selectedResource.value.kind} 资源详情` : '资源详情')
+const isTemplateContainerDetail = computed(() => isDeploymentResource(selectedResource.value))
+const containerDetailTitle = computed(() => isTemplateContainerDetail.value ? `模板容器详情 / ${selectedContainerName.value}` : `容器详情 / ${selectedContainerName.value}`)
+watch(activeMonitoringTarget, () => {
+  activeMonitoringIndex.value = null
+})
+watch([activeMonitoringRange, activeMonitoringStep], () => {
+  const rangeSeconds = monitoringSelectedRange.value.seconds
+  const stepSeconds = monitoringSelectedStep.value.seconds
+  if (rangeSeconds / stepSeconds > 240) {
+    activeMonitoringStep.value = rangeSeconds >= 12 * 60 * 60 ? '15m' : rangeSeconds >= 6 * 60 * 60 ? '5m' : '60s'
+  }
+  activeMonitoringIndex.value = null
+})
 const podTemplatePanels: Array<{ id: PodTemplatePanel; label: string; help: string }> = [
-  { id: 'app', label: '普通容器', help: 'Deployment Pod 中长期运行的业务容器，可配置多个容器，并分别维护基础、环境变量、资源、安全、探针、挂载和生命周期。' },
+  { id: 'app', label: '普通容器', help: 'Pod 中长期运行的业务容器，可配置多个容器，并分别维护基础、环境变量、资源、安全、探针、挂载和生命周期。' },
   { id: 'init', label: 'Init 容器', help: 'Pod 启动前顺序执行的初始化容器，支持命令、环境变量、资源和挂载；普通 init 容器不配置探针和生命周期钩子。' }
 ]
 const appContainerPanels: Array<{ id: AppContainerPanel; label: string; help: string }> = [
@@ -382,6 +591,14 @@ const imagePullPolicyOptions = [
   { label: 'Always', value: 'Always' },
   { label: 'Never', value: 'Never' }
 ]
+const terminalCommandOptions = [
+  { label: '/bin/sh', value: '/bin/sh' },
+  { label: '/bin/bash', value: '/bin/bash' },
+  { label: '/busybox/sh', value: '/busybox/sh' },
+  { label: '/bin/ash', value: '/bin/ash' },
+  { label: '自定义', value: 'custom' }
+]
+const terminalCommand = computed(() => terminalCommandPreset.value === 'custom' ? terminalCustomCommand.value.trim() || '/bin/sh' : terminalCommandPreset.value)
 const deploymentPanels: Array<{ id: DeploymentPanel; label: string; help: string }> = [
   { id: 'basic', label: '基本信息', help: '配置 Deployment 名称、Namespace 和副本数。' },
   { id: 'metadata', label: '元数据信息', help: '默认标签 key 为 app，value 跟随名称；注解默认为空。' }
@@ -592,6 +809,26 @@ function resolveResourceType() {
   return resourceDefinitions[path] ? path : 'pods'
 }
 
+function queryStringValue(value: unknown) {
+  return Array.isArray(value) ? String(value[0] ?? '') : String(value ?? '')
+}
+
+function applyRouteFiltersFromQuery() {
+  const namespace = queryStringValue(route.query.namespace)
+  const nodeName = queryStringValue(route.query.nodeName || route.query.node)
+  const detailName = queryStringValue(route.query.detail)
+  const name = queryStringValue(route.query.name)
+  const labels = queryStringValue(route.query.labels)
+  const status = queryStringValue(route.query.status)
+  const keyword = queryStringValue(route.query.keyword)
+  if (namespace) filters.namespace = namespace
+  if (nodeName) filters.nodeName = nodeName
+  if (name || detailName) filters.name = name || detailName
+  if (labels) filters.labels = labels
+  if (status) filters.status = status
+  if (keyword) filters.keyword = keyword
+}
+
 function sampleYaml(kind: string, name: string, namespace?: string) {
   return [
     'apiVersion: v1',
@@ -620,7 +857,7 @@ function makeResource(definition: ResourceDefinition, index: number): KubeResour
   const status: ResourceStatus = index === 1 ? 'Warning' : definition.type === 'jobs' ? 'Succeeded' : definition.type === 'persistent-volume-claims' ? 'Bound' : 'Running'
   return {
     id: `${definition.type}-${baseName}`,
-    clusterId: 'prod-main',
+    clusterId: filters.clusterId,
     type: definition.type,
     kind: definition.kind,
     namespace,
@@ -664,30 +901,1219 @@ function buildFallbackResources(type = currentDefinition.value.type) {
   return [0, 1, 2].map((index) => makeResource(definition, index))
 }
 
-function normalizeResourceList(value: unknown): KubeResourceItem[] {
-  const candidate = Array.isArray(value) ? value : typeof value === 'object' && value !== null ? (value as { items?: unknown }).items : undefined
-  if (!Array.isArray(candidate)) return buildFallbackResources()
-  return candidate.map((item, index) => {
-    const partial = item as Partial<KubeResourceItem>
+function stringDetailValue(value: unknown) {
+  if (Array.isArray(value)) return value.join(',')
+  if (value === undefined || value === null) return ''
+  return String(value)
+}
+
+const detailFieldLabels: Record<string, string> = {
+  phase: '阶段',
+  ready: '容器就绪',
+  restarts: '重启次数',
+  restartCount: '重启次数',
+  podIP: 'Pod IP',
+  hostIP: '宿主机 IP',
+  nodeName: '节点',
+  nodeInternalIP: '节点内网 IP',
+  nodeExternalIP: '节点外网 IP',
+  owner: '所属控制器',
+  containers: '容器',
+  initContainers: 'Init 容器',
+  images: '镜像',
+  containerPorts: '容器端口',
+  cpuUsage: 'CPU 用量',
+  memoryUsage: '内存用量',
+  cpuRequest: 'CPU Request',
+  cpuLimit: 'CPU Limit',
+  memoryRequest: '内存 Request',
+  memoryLimit: '内存 Limit',
+  serviceAccountName: 'ServiceAccount',
+  qosClass: 'QoS',
+  conditions: 'Conditions',
+  volumes: '存储卷',
+  dnsPolicy: 'DNS 策略',
+  hostNetwork: '宿主机网络',
+  nodeSelector: '节点选择器',
+  imagePullSecrets: '镜像拉取密钥',
+  lastError: '最近错误',
+  replicas: '副本数',
+  strategy: '更新策略',
+  maxSurge: 'maxSurge',
+  maxUnavailable: 'maxUnavailable',
+  rollingUpdateNote: '滚动更新提示',
+  minReadySeconds: '最小就绪时间',
+  revisionHistoryLimit: '历史版本保留',
+  progressDeadlineSeconds: '进度超时时间',
+  paused: '暂停发布',
+  selector: '选择器',
+  serviceName: 'Service 名称',
+  updateStrategy: '更新策略',
+  desired: '期望数量',
+  current: '当前数量'
+}
+
+function detailFieldLabel(key: string) {
+  return detailFieldLabels[key] ?? key
+}
+
+function detailFieldValue(value: unknown) {
+  if (typeof value === 'boolean') return value ? '是' : '否'
+  if (Array.isArray(value)) return value.join(',')
+  if (value === undefined || value === null || value === '') return '-'
+  return String(value)
+}
+
+function isPodResource(resource: KubeResourceItem | null | undefined) {
+  return resource?.type === 'pods' || resource?.kind === 'Pod'
+}
+
+function isDeploymentResource(resource: KubeResourceItem | null | undefined) {
+  return resource?.type === 'deployments' || resource?.kind === 'Deployment'
+}
+
+function splitDetailList(value: unknown) {
+  return stringDetailValue(value)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function yamlObjectFromResource(resource: KubeResourceItem) {
+  const parsed = parseKubeYaml(resource.yaml)
+  return parsed.ok && parsed.value ? parsed.value : null
+}
+
+function podSpecFromResource(resource: KubeResourceItem) {
+  const object = yamlObjectFromResource(resource)
+  const spec = object ? readPath(object, ['spec']) : undefined
+  return asRecord(spec)
+}
+
+function podContainersFromResource(resource: KubeResourceItem) {
+  const containers = podSpecFromResource(resource).containers
+  return Array.isArray(containers) ? containers.map((container) => asRecord(container)) : []
+}
+
+function podVolumesFromResource(resource: KubeResourceItem) {
+  const volumes = podSpecFromResource(resource).volumes
+  return Array.isArray(volumes) ? volumes.map((volume) => asRecord(volume)) : []
+}
+
+function csvFromRecordValue(value: unknown) {
+  const record = asRecord(value)
+  return Object.entries(record).map(([key, item]) => `${key}=${item}`).join(', ')
+}
+
+function containerFieldList(container: Record<string, unknown>, key: string, formatter: (item: Record<string, unknown>) => string) {
+  const values = container[key]
+  if (!Array.isArray(values)) return ''
+  return values
+    .map((item) => formatter(asRecord(item)))
+    .filter(Boolean)
+    .join(', ')
+}
+
+function volumeSourceSummary(volume: Record<string, unknown>) {
+  const name = String(volume.name ?? '').trim()
+  if (!name) return ''
+  if (volume.configMap) return `${name}（ConfigMap/${asRecord(volume.configMap).name ?? '-'}）`
+  if (volume.secret) return `${name}（Secret/${asRecord(volume.secret).secretName ?? '-'}）`
+  if (volume.persistentVolumeClaim) return `${name}（PVC/${asRecord(volume.persistentVolumeClaim).claimName ?? '-'}）`
+  if (volume.emptyDir) return `${name}（emptyDir）`
+  if (volume.projected) return `${name}（projected）`
+  if (volume.hostPath) return `${name}（hostPath/${asRecord(volume.hostPath).path ?? '-'}）`
+  return name
+}
+
+function volumeSourceResource(volume: Record<string, unknown>, namespace?: string): RelatedResourceItem | null {
+  if (volume.configMap) {
+    const name = String(asRecord(volume.configMap).name ?? '').trim()
+    return name ? { kind: 'ConfigMap', name, namespace, resourceType: 'configmaps', relation: 'mounted' } : null
+  }
+  if (volume.secret) {
+    const name = String(asRecord(volume.secret).secretName ?? '').trim()
+    return name ? { kind: 'Secret', name, namespace, resourceType: 'secrets', relation: 'mounted' } : null
+  }
+  if (volume.persistentVolumeClaim) {
+    const name = String(asRecord(volume.persistentVolumeClaim).claimName ?? '').trim()
+    return name ? { kind: 'PersistentVolumeClaim', name, namespace, resourceType: 'persistent-volume-claims', relation: 'mounted' } : null
+  }
+  return null
+}
+
+function volumeSourceKind(volume: Record<string, unknown>) {
+  if (volume.configMap) return 'ConfigMap'
+  if (volume.secret) return 'Secret'
+  if (volume.persistentVolumeClaim) return 'PVC'
+  if (volume.emptyDir) return 'emptyDir'
+  if (volume.projected) return 'projected'
+  if (volume.hostPath) return 'hostPath'
+  return 'Volume'
+}
+
+function containerYamlObject(resource: KubeResourceItem, containerName: string) {
+  return podContainersFromResource(resource).find((container) => String(container.name ?? '') === containerName) ?? null
+}
+
+function containerStatusObject(resource: KubeResourceItem, containerName: string) {
+  const object = yamlObjectFromResource(resource)
+  const statuses = object ? readPath(object, ['status', 'containerStatuses']) : undefined
+  if (!Array.isArray(statuses)) return null
+  return statuses.map((status) => asRecord(status)).find((status) => String(status.name ?? '') === containerName) ?? null
+}
+
+function containerStateText(status: Record<string, unknown> | null, fallback: string) {
+  const state = asRecord(status?.state)
+  if (state.running) {
+    const startedAt = asRecord(state.running).startedAt
+    return startedAt ? `Running since ${startedAt}` : 'Running'
+  }
+  if (state.waiting) {
+    const waiting = asRecord(state.waiting)
+    return String(waiting.reason ?? waiting.message ?? 'Waiting')
+  }
+  if (state.terminated) {
+    const terminated = asRecord(state.terminated)
+    return String(terminated.reason ?? terminated.exitCode ?? 'Terminated')
+  }
+  return fallback
+}
+
+function containerResourceRows(container: Record<string, unknown>) {
+  const requests = asRecord(asRecord(container.resources).requests)
+  const limits = asRecord(asRecord(container.resources).limits)
+  return {
+    requests: [
+      `CPU: ${requests.cpu ?? '-'}`,
+      `Memory: ${requests.memory ?? '-'}`
+    ],
+    limits: [
+      `CPU: ${limits.cpu ?? '-'}`,
+      `Memory: ${limits.memory ?? '-'}`
+    ]
+  }
+}
+
+function selectedContainerYamlObject() {
+  const resource = selectedResource.value
+  if (!resource) return null
+  if (isDeploymentResource(resource)) {
+    return workloadTemplateContainers(resource).find((container) => String(container.name ?? '') === selectedContainerName.value) ?? null
+  }
+  return containerYamlObject(resource, selectedContainerName.value)
+}
+
+function selectedContainerStatusObject() {
+  const resource = selectedResource.value
+  if (isDeploymentResource(resource)) return null
+  return resource ? containerStatusObject(resource, selectedContainerName.value) : null
+}
+
+function podContainerRows(resource: KubeResourceItem) {
+  const names = splitDetailList(resource.details.containers)
+  const images = splitDetailList(resource.details.images)
+  const ports = splitDetailList(resource.details.containerPorts)
+  const yamlContainers = podContainersFromResource(resource)
+  const sourceNames = yamlContainers.map((container) => String(container.name ?? '')).filter(Boolean)
+  const containerNames = Array.from(new Set([...sourceNames, ...names]))
+  return (containerNames.length ? containerNames : ['app']).map((name, index) => {
+    const yamlContainer = yamlContainers.find((container) => String(container.name ?? '') === name)
+    const yamlPorts = containerFieldList(yamlContainer ?? {}, 'ports', (port) => `${port.name ? `${port.name}:` : ''}${port.containerPort ?? '-'}${port.protocol ? `/${port.protocol}` : '/TCP'}`)
     return {
-      ...makeResource(currentDefinition.value, index),
-      ...partial,
-      type: partial.type ?? currentDefinition.value.type,
-      kind: partial.kind ?? currentDefinition.value.kind,
-      clusterId: partial.clusterId ?? filters.clusterId,
-      labels: partial.labels ?? {},
-      annotations: partial.annotations ?? {},
-      related: partial.related ?? [],
-      events: partial.events ?? [],
-      yaml: partial.yaml ?? sampleYaml(currentDefinition.value.kind, partial.name ?? `resource-${index + 1}`, partial.namespace)
+    name,
+    image: String(yamlContainer?.image ?? images[index] ?? images[0] ?? '-'),
+    status: resource.status,
+    restarts: resource.restarts ?? resource.details.restartCount ?? 0,
+    cpu: podMetricValue(resource, 'cpuUsage', 'cpuRequest', 'cpuLimit'),
+    memory: podMetricValue(resource, 'memoryUsage', 'memoryRequest', 'memoryLimit'),
+    port: yamlPorts || ports[index] || ports[0] || '-'
     }
   })
 }
 
+function podTerminalContainerOptions(resource: KubeResourceItem | null) {
+  if (!resource || !isPodResource(resource)) return []
+  return podContainerRows(resource).map((container) => ({
+    label: container.name,
+    value: container.name
+  }))
+}
+
+function selectedContainerRow() {
+  const resource = selectedResource.value
+  if (!resource) return null
+  if (isDeploymentResource(resource)) {
+    const templateContainer = deploymentContainerRows(resource).find((container) => container.name === selectedContainerName.value)
+    return templateContainer
+      ? {
+          name: templateContainer.name,
+          image: templateContainer.image,
+          status: 'Template',
+          restarts: '不适用',
+          cpu: templateContainer.cpu,
+          memory: templateContainer.memory,
+          port: templateContainer.ports
+        }
+      : null
+  }
+  return podContainerRows(resource).find((container) => container.name === selectedContainerName.value) ?? null
+}
+
+function openContainerDetail(containerName: string) {
+  selectedContainerName.value = containerName
+  activeContainerDetailTab.value = 'details'
+  containerDetailOpen.value = true
+}
+
+function closeContainerDetail() {
+  containerDetailOpen.value = false
+  activeContainerDetailTab.value = 'details'
+}
+
+function selectedContainerDetailRows() {
+  const resource = selectedResource.value
+  const container = selectedContainerRow()
+  if (!resource || !container) return []
+  const yamlContainer = selectedContainerYamlObject() ?? {}
+  const status = selectedContainerStatusObject()
+  if (isDeploymentResource(resource)) {
+    return [
+      { label: 'Image', value: container.image },
+      { label: 'Image Pull Policy', value: yamlContainer.imagePullPolicy || 'IfNotPresent' },
+      { label: 'Ports', value: container.port },
+      { label: 'Command', value: Array.isArray(yamlContainer.command) ? yamlContainer.command.join(' ') : yamlContainer.command },
+      { label: 'Args', value: Array.isArray(yamlContainer.args) ? yamlContainer.args.join(' ') : yamlContainer.args },
+      { label: 'Env Count', value: selectedContainerEnvRows().length },
+      { label: 'Volume Mounts', value: selectedContainerMountRows().length }
+    ]
+  }
+  return [
+    { label: 'Image', value: container.image },
+    { label: 'Image Pull Policy', value: yamlContainer.imagePullPolicy || 'IfNotPresent' },
+    { label: 'State', value: containerStateText(status, container.status) },
+    { label: 'Ports', value: container.port },
+    { label: 'Restart Count', value: status?.restartCount ?? container.restarts },
+    { label: 'Image ID', value: status?.imageID || '未返回' },
+    { label: 'Container ID', value: status?.containerID || '未返回' }
+  ]
+}
+
+function selectedContainerEnvRows() {
+  const container = selectedContainerYamlObject()
+  if (!container || !Array.isArray(container.env)) return []
+  return container.env.map((item) => {
+    const env = asRecord(item)
+    const name = String(env.name ?? '').trim()
+    const valueFrom = asRecord(env.valueFrom)
+    let value = env.value !== undefined ? String(env.value) : ''
+    let source = 'value'
+    if (!value && valueFrom.configMapKeyRef) {
+      const ref = asRecord(valueFrom.configMapKeyRef)
+      value = `${ref.name ?? '-'}/${ref.key ?? '-'}`
+      source = 'ConfigMap'
+    } else if (!value && valueFrom.secretKeyRef) {
+      const ref = asRecord(valueFrom.secretKeyRef)
+      value = `${ref.name ?? '-'}/${ref.key ?? '-'}`
+      source = 'Secret'
+    } else if (!value && valueFrom.fieldRef) {
+      value = String(asRecord(valueFrom.fieldRef).fieldPath ?? '-')
+      source = 'FieldRef'
+    } else if (!value && valueFrom.resourceFieldRef) {
+      value = String(asRecord(valueFrom.resourceFieldRef).resource ?? '-')
+      source = 'ResourceFieldRef'
+    }
+    return { name, source, value: value || '-' }
+  }).filter((item) => item.name)
+}
+
+function selectedContainerMountRows() {
+  const resource = selectedResource.value
+  const container = selectedContainerYamlObject()
+  if (!resource || !container || !Array.isArray(container.volumeMounts)) return []
+  const volumes = isDeploymentResource(resource) ? workloadTemplateVolumes(resource) : podVolumesFromResource(resource)
+  return container.volumeMounts.map((item) => {
+    const mount = asRecord(item)
+    const name = String(mount.name ?? '').trim()
+    const volume = volumes.find((candidate) => String(candidate.name ?? '') === name)
+    return {
+      name,
+      mountPath: String(mount.mountPath ?? '-'),
+      subPath: String(mount.subPath ?? ''),
+      readOnly: mount.readOnly === true,
+      source: volume ? volumeSourceSummary(volume) : name,
+      sourceResource: volume ? volumeSourceResource(volume, resource.namespace) : null
+    }
+  }).filter((item) => item.name)
+}
+
+function podVolumeDetailRows(resource: KubeResourceItem) {
+  return podVolumesFromResource(resource).map((volume) => {
+    const name = String(volume.name ?? '').trim()
+    return {
+      name,
+      kind: volumeSourceKind(volume),
+      summary: volumeSourceSummary(volume),
+      sourceResource: volumeSourceResource(volume, resource.namespace)
+    }
+  }).filter((item) => item.name)
+}
+
+function podContainerMountMatrix(resource: KubeResourceItem) {
+  const volumes = podVolumesFromResource(resource)
+  return podContainersFromResource(resource).map((container) => {
+    const name = String(container.name ?? '').trim()
+    const mounts = Array.isArray(container.volumeMounts)
+      ? container.volumeMounts.map((item) => {
+        const mount = asRecord(item)
+        const volumeName = String(mount.name ?? '').trim()
+        const volume = volumes.find((candidate) => String(candidate.name ?? '') === volumeName)
+        return {
+          name: volumeName,
+          mountPath: String(mount.mountPath ?? '-'),
+          subPath: String(mount.subPath ?? ''),
+          readOnly: mount.readOnly === true,
+          source: volume ? volumeSourceSummary(volume) : volumeName,
+          sourceKind: volume ? volumeSourceKind(volume) : 'Volume',
+          sourceResource: volume ? volumeSourceResource(volume, resource.namespace) : null
+        }
+      }).filter((mount) => mount.name)
+      : []
+    return { name, mounts }
+  }).filter((item) => item.name)
+}
+
+function podInfoRows(resource: KubeResourceItem) {
+  return [
+    { label: '所有者', value: resource.details.owner || resource.owner || '-' },
+    { label: 'ServiceAccount', value: resource.details.serviceAccountName || '-' },
+    { label: '重启策略', value: resource.details.restartPolicy || 'Always' },
+    { label: 'DNS 策略', value: resource.details.dnsPolicy || 'ClusterFirst' },
+    { label: 'QoS 类', value: resource.details.qosClass || '-' },
+    { label: '主机网络', value: detailFieldValue(resource.details.hostNetwork || '否') },
+    { label: '节点内网 IP', value: nodeInternalIP(resource) || '-' },
+    { label: '节点外网 IP', value: nodeExternalIP(resource) || '-' },
+    { label: '存储卷', value: resource.details.volumes || '-' },
+    { label: 'Conditions', value: resource.details.conditions || '-' }
+  ]
+}
+
+function podPortRows(resource: KubeResourceItem) {
+  return splitDetailList(resource.details.containerPorts).map((port) => {
+    const [number = port, protocol = 'TCP'] = port.split('/')
+    return { number, protocol }
+  })
+}
+
+function podRelatedRows(resource: KubeResourceItem) {
+  const rows = [...resource.related]
+  const owner = stringDetailValue(resource.details.owner || resource.owner)
+  const deploymentName = owner.startsWith('Deployment/') ? owner.slice('Deployment/'.length) : ''
+  if (deploymentName && !rows.some((item) => item.kind === 'Deployment' && item.name === deploymentName)) {
+    rows.unshift({
+      kind: 'Deployment',
+      name: deploymentName,
+      namespace: resource.namespace,
+      status: 'Available',
+      resourceType: 'deployments',
+      relation: 'owner'
+    })
+  }
+  const replicaSet = resource.ownerReferences?.find((item) => item.kind === 'ReplicaSet')?.name
+  if (replicaSet && !rows.some((item) => item.kind === 'ReplicaSet' && item.name === replicaSet)) {
+    rows.push({
+      kind: 'ReplicaSet',
+      name: replicaSet,
+      namespace: resource.namespace,
+      status: 'Ready',
+      resourceType: 'replicasets',
+      relation: 'ownerReference'
+    })
+  }
+  return rows.slice(0, 5)
+}
+
+function podVolumeRows(resource: KubeResourceItem) {
+  const yamlVolumes = podVolumesFromResource(resource).map(volumeSourceSummary).filter(Boolean)
+  return yamlVolumes.length ? yamlVolumes : splitDetailList(resource.details.volumes)
+}
+
+function workloadSpecFromResource(resource: KubeResourceItem) {
+  const object = yamlObjectFromResource(resource)
+  return object ? asRecord(readPath(object, ['spec'])) : {}
+}
+
+function workloadTemplateSpecFromResource(resource: KubeResourceItem) {
+  return asRecord(readPath(workloadSpecFromResource(resource), ['template', 'spec']))
+}
+
+function workloadTemplateContainers(resource: KubeResourceItem) {
+  const containers = workloadTemplateSpecFromResource(resource).containers
+  if (Array.isArray(containers)) return containers.map((container) => asRecord(container))
+  const names = splitDetailList(resource.details.containers)
+  const images = splitDetailList(resource.details.images || resource.image)
+  return names.map((name, index) => ({ name, image: images[index] ?? images[0] ?? '-' } as Record<string, unknown>))
+}
+
+function workloadTemplateVolumes(resource: KubeResourceItem) {
+  const volumes = workloadTemplateSpecFromResource(resource).volumes
+  if (Array.isArray(volumes)) return volumes.map((volume) => asRecord(volume))
+  return []
+}
+
+function workloadTemplateVolumeRows(resource: KubeResourceItem) {
+  const yamlVolumes = workloadTemplateVolumes(resource).map(volumeSourceSummary).filter(Boolean)
+  return yamlVolumes.length ? yamlVolumes : splitDetailList(resource.details.volumes)
+}
+
+function deploymentReplicas(resource: KubeResourceItem) {
+  const desired = Number(resource.desiredReplicas ?? resource.details.desiredReplicas ?? resource.details.replicas ?? resource.replicas ?? 0)
+  const updated = Number(resource.details.updatedReplicas ?? desired)
+  const available = Number(resource.details.availableReplicas ?? String(resource.ready ?? '').split('/')[0] ?? 0)
+  const unavailable = Number(resource.details.unavailableReplicas ?? Math.max(0, desired - available))
+  return { desired, updated, available, unavailable }
+}
+
+function deploymentConditionRows(resource: KubeResourceItem) {
+  const object = yamlObjectFromResource(resource)
+  const conditions = object ? readPath(object, ['status', 'conditions']) : undefined
+  if (Array.isArray(conditions)) {
+    return conditions.map((condition) => {
+      const item = asRecord(condition)
+      return {
+        type: String(item.type ?? '-'),
+        status: String(item.status ?? '-'),
+        reason: String(item.reason ?? '-'),
+        message: String(item.message ?? '')
+      }
+    })
+  }
+  return splitDetailList(resource.details.conditions).map((condition) => {
+    const match = condition.match(/^([^=]+)=([^(]+)(?:\(([^)]+)\))?/)
+    return {
+      type: match?.[1] ?? condition,
+      status: match?.[2] ?? '-',
+      reason: match?.[3] ?? '-',
+      message: ''
+    }
+  })
+}
+
+function deploymentInfoRows(resource: KubeResourceItem) {
+  return [
+    { label: 'Selector', value: resource.details.selector || '-' },
+    { label: 'Strategy', value: resource.details.strategy || 'RollingUpdate' },
+    { label: 'maxSurge', value: resource.details.strategy === 'Recreate' ? '不适用' : resource.details.maxSurge || '-' },
+    { label: 'maxUnavailable', value: resource.details.strategy === 'Recreate' ? '不适用' : resource.details.maxUnavailable || '-' },
+    { label: 'minReadySeconds', value: resource.details.minReadySeconds ?? '-' },
+    { label: 'progressDeadlineSeconds', value: resource.details.progressDeadlineSeconds ?? '-' },
+    { label: 'revisionHistoryLimit', value: resource.details.revisionHistoryLimit ?? '-' },
+    { label: 'paused', value: detailFieldValue(resource.details.paused ?? false) },
+    { label: 'observedGeneration', value: resource.details.observedGeneration ?? '-' },
+    { label: 'ServiceAccount', value: resource.details.serviceAccountName || '-' },
+    { label: 'imagePullSecrets', value: resource.details.imagePullSecrets || '-' }
+  ]
+}
+
+function deploymentContainerRows(resource: KubeResourceItem) {
+  return workloadTemplateContainers(resource).map((container, index) => {
+    const ports = Array.isArray(container.ports)
+      ? container.ports.map((port: unknown) => {
+        const item = asRecord(port)
+        return `${item.name ? `${item.name}:` : ''}${item.containerPort ?? '-'}${item.protocol ? `/${item.protocol}` : '/TCP'}`
+      }).join(', ')
+      : splitDetailList(resource.details.containerPorts)[index] || splitDetailList(resource.details.containerPorts)[0] || '-'
+    const requests = asRecord(asRecord(container.resources).requests)
+    const limits = asRecord(asRecord(container.resources).limits)
+    return {
+      name: String(container.name ?? `container-${index + 1}`),
+      image: String(container.image ?? resource.images?.[index] ?? resource.image ?? '-'),
+      policy: String(container.imagePullPolicy ?? 'IfNotPresent'),
+      ports,
+      cpu: `${requests.cpu ?? '-'} / ${limits.cpu ?? '-'}`,
+      memory: `${requests.memory ?? '-'} / ${limits.memory ?? '-'}`
+    }
+  })
+}
+
+function deploymentRelatedRows(resource: KubeResourceItem) {
+  const rows = [...resource.related]
+  return rows
+    .filter((item) => ['ReplicaSet', 'Pod', 'Service', 'Endpoint', 'EndpointSlice'].includes(item.kind))
+    .slice(0, 8)
+}
+
+function labelsFromYamlObject(object: Record<string, unknown>, fallbackName: string) {
+  const labels = asRecord(readPath(object, ['metadata', 'labels']))
+  if (!Object.keys(labels).length) return { app: fallbackName, 'app.kubernetes.io/managed-by': 'kube-subops' }
+  return Object.fromEntries(Object.entries(labels).map(([key, value]) => [key, String(value)]))
+}
+
+function annotationsFromYamlObject(object: Record<string, unknown>) {
+  const annotations = asRecord(readPath(object, ['metadata', 'annotations']))
+  return Object.fromEntries(Object.entries(annotations).map(([key, value]) => [key, String(value)]))
+}
+
+function imagesFromYamlObject(object: Record<string, unknown>) {
+  const containers = String(object.kind ?? '') === 'Pod'
+    ? readPath(object, ['spec', 'containers'])
+    : readPath(object, ['spec', 'template', 'spec', 'containers'])
+  if (!Array.isArray(containers)) return []
+  return containers
+    .map((container) => String(asRecord(container).image ?? '').trim())
+    .filter(Boolean)
+}
+
+function ownerReferencesFromYamlObject(object: Record<string, unknown>) {
+  const owners = readPath(object, ['metadata', 'ownerReferences'])
+  if (!Array.isArray(owners)) return []
+  return owners
+    .map((owner) => {
+      const item = asRecord(owner)
+      const kind = String(item.kind ?? '').trim()
+      const name = String(item.name ?? '').trim()
+      return kind && name ? { kind, name, resourceType: resourceTypeForKind(kind) } : null
+    })
+    .filter((owner): owner is { kind: string; name: string; resourceType: string } => Boolean(owner))
+}
+
+function podDetailsFromYamlObject(object: Record<string, unknown>) {
+  const spec = asRecord(readPath(object, ['spec']))
+  const status = asRecord(readPath(object, ['status']))
+  const containers = Array.isArray(spec.containers) ? spec.containers.map((container) => asRecord(container)) : []
+  const initContainers = Array.isArray(spec.initContainers) ? spec.initContainers.map((container) => asRecord(container)) : []
+  const containerStatuses = Array.isArray(status.containerStatuses) ? status.containerStatuses.map((container) => asRecord(container)) : []
+  const volumes = Array.isArray(spec.volumes) ? spec.volumes.map((volume) => asRecord(volume)) : []
+  const ports = containers.flatMap((container) =>
+    (Array.isArray(container.ports) ? container.ports : []).map((port) => {
+      const item = asRecord(port)
+      return `${item.name ? `${item.name}:` : ''}${item.containerPort ?? '-'}/${item.protocol ?? 'TCP'}`
+    })
+  )
+  const conditions = (Array.isArray(status.conditions) ? status.conditions : []).map((condition) => {
+    const item = asRecord(condition)
+    return `${item.type}=${item.status}${item.reason ? `(${item.reason})` : ''}`
+  })
+  const imagePullSecrets = (Array.isArray(spec.imagePullSecrets) ? spec.imagePullSecrets : [])
+    .map((secret) => String(asRecord(secret).name ?? '').trim())
+    .filter(Boolean)
+  const restartCount = containerStatuses.reduce((sum, item) => sum + Number(item.restartCount ?? 0), 0)
+  const readyCount = containerStatuses.filter((container) => container.ready === true).length
+  const details: KubeResourceItem['details'] = {}
+  const firstOwner = ownerReferencesFromYamlObject(object)[0]
+  if (status.phase !== undefined) details.phase = String(status.phase)
+  if (containers.length) details.ready = containerStatuses.length ? `${readyCount}/${containers.length}` : `${containers.length}/${containers.length}`
+  if (restartCount) details.restartCount = restartCount
+  if (status.podIP !== undefined) details.podIP = String(status.podIP)
+  if (status.hostIP !== undefined) details.hostIP = String(status.hostIP)
+  if (spec.nodeName !== undefined) details.nodeName = String(spec.nodeName)
+  if (firstOwner) details.owner = `${firstOwner.kind}/${firstOwner.name}`
+  if (containers.length) details.containers = containers.map((container) => String(container.name ?? '')).filter(Boolean).join(', ')
+  if (initContainers.length) details.initContainers = initContainers.map((container) => String(container.name ?? '')).filter(Boolean).join(', ')
+  const images = imagesFromYamlObject(object)
+  if (images.length) details.images = images.join(', ')
+  if (ports.length) details.containerPorts = ports.join(', ')
+  if (spec.serviceAccountName !== undefined) details.serviceAccountName = String(spec.serviceAccountName)
+  if (status.qosClass !== undefined) details.qosClass = String(status.qosClass)
+  if (conditions.length) details.conditions = conditions.join(', ')
+  if (volumes.length) details.volumes = volumes.map(volumeSourceSummary).join(', ')
+  if (spec.dnsPolicy !== undefined) details.dnsPolicy = String(spec.dnsPolicy)
+  if (spec.hostNetwork !== undefined) details.hostNetwork = Boolean(spec.hostNetwork)
+  const nodeSelector = csvFromRecordValue(spec.nodeSelector)
+  if (nodeSelector) details.nodeSelector = nodeSelector
+  if (imagePullSecrets.length) details.imagePullSecrets = imagePullSecrets.join(', ')
+  return details
+}
+
+function applyYamlObjectToResource(resource: KubeResourceItem, object: Record<string, unknown>, yaml: string) {
+  const name = yamlObjectName(object) || resource.name
+  const namespace = currentDefinition.value.namespaced ? yamlObjectNamespace(object, resource.namespace ?? '') || resource.namespace : undefined
+  const kind = String(object.kind ?? resource.kind)
+  const details = kind === 'Pod' ? podDetailsFromYamlObject(object) : resource.details
+  const images = imagesFromYamlObject(object)
+  resource.name = name
+  resource.kind = kind
+  resource.namespace = namespace
+  resource.labels = labelsFromYamlObject(object, name)
+  resource.annotations = annotationsFromYamlObject(object)
+  resource.ownerReferences = ownerReferencesFromYamlObject(object)
+  resource.yaml = yaml
+  resource.details = { ...resource.details, ...details }
+  if (kind === 'Pod') {
+    resource.status = String(readPath(object, ['status', 'phase']) ?? resource.status) as ResourceStatus
+    resource.ready = String(details.ready ?? resource.ready ?? '-')
+    resource.restarts = Number(details.restartCount ?? resource.restarts ?? 0)
+    resource.podIP = String(details.podIP ?? '') || undefined
+    resource.nodeName = String(details.nodeName ?? '') || undefined
+    resource.image = images[0] ?? resource.image
+  }
+}
+
+function onDetailYamlInput(event: Event) {
+  detailYamlDraft.value = inputValue(event)
+  detailYamlError.value = ''
+}
+
+async function saveDetailYaml() {
+  const resource = selectedResource.value
+  if (!resource) return
+  const parsed = parseKubeYaml(detailYamlDraft.value)
+  if (!parsed.ok || !parsed.value) {
+    detailYamlError.value = parsed.error ?? 'YAML 解析失败。'
+    return
+  }
+  const errors = validateYamlObject(parsed.value, resourceDefinitions[resource.type] ?? currentDefinition.value, resource.namespace)
+  if (errors.length) {
+    detailYamlError.value = errors.join(' ')
+    return
+  }
+  const yaml = detailYamlDraft.value
+  applyYamlObjectToResource(resource, parsed.value, yaml)
+  await callApi(
+    ['updateKubeResource', 'updateResource'],
+    [{
+      clusterId: resource.clusterId,
+      resourceType: resource.type,
+      namespace: resource.namespace,
+      name: resource.name,
+      yaml
+    }],
+    { ok: true }
+  )
+  successMessage.value = `${resource.kind}/${resource.name} YAML 已保存到当前列表数据。`
+  detailYamlError.value = ''
+}
+
+function isColumnVisible(key: string) {
+  return !hiddenColumns.has(key)
+}
+
+function saveHiddenColumns() {
+  localStorage.setItem(resourceColumnStorageKey.value, JSON.stringify([...hiddenColumns]))
+}
+
+function loadHiddenColumns() {
+  hiddenColumns.clear()
+  try {
+    const raw = localStorage.getItem(resourceColumnStorageKey.value)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) parsed.forEach((key) => hiddenColumns.add(String(key)))
+      return
+    }
+  } catch {
+    hiddenColumns.clear()
+  }
+  defaultHiddenColumnKeys.value.forEach((key) => hiddenColumns.add(key))
+}
+
+function toggleColumn(key: string) {
+  if (hiddenColumns.has(key)) {
+    hiddenColumns.delete(key)
+  } else {
+    hiddenColumns.add(key)
+  }
+  saveHiddenColumns()
+}
+
+function resetVisibleColumns() {
+  hiddenColumns.clear()
+  defaultHiddenColumnKeys.value.forEach((key) => hiddenColumns.add(key))
+  saveHiddenColumns()
+}
+
+function handleClickOutside(event: MouseEvent) {
+  const target = event.target as Node
+  if (columnDropdownRef.value && !columnDropdownRef.value.contains(target)) showColumnDropdown.value = false
+}
+
+function podMetricValue(resource: KubeResourceItem, usageKey: 'cpuUsage' | 'memoryUsage', requestKey: 'cpuRequest' | 'memoryRequest', limitKey: 'cpuLimit' | 'memoryLimit') {
+  const usage = resource[usageKey] || resource.details[usageKey]
+  const request = resource[requestKey] || resource.details[requestKey]
+  const limit = resource[limitKey] || resource.details[limitKey]
+  if (usage) return `${usage} / ${limit || request || '-'}`
+  if (request || limit) return `req ${request || '-'} / lim ${limit || '-'}`
+  return '-'
+}
+
+function resourceMetricParts(resource: KubeResourceItem, kind: 'cpu' | 'memory') {
+  const usageKey = kind === 'cpu' ? 'cpuUsage' : 'memoryUsage'
+  const requestKey = kind === 'cpu' ? 'cpuRequest' : 'memoryRequest'
+  const limitKey = kind === 'cpu' ? 'cpuLimit' : 'memoryLimit'
+  const usage = String(resource[usageKey] || resource.details[usageKey] || '')
+  const request = String(resource[requestKey] || resource.details[requestKey] || '')
+  const limit = String(resource[limitKey] || resource.details[limitKey] || '')
+  return { usage, request, limit }
+}
+
+function parseMetricQuantity(value: string, kind: 'cpu' | 'memory') {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (kind === 'cpu') {
+    if (trimmed.endsWith('m')) {
+      const numeric = Number(trimmed.slice(0, -1))
+      return Number.isFinite(numeric) ? numeric : null
+    }
+    const numeric = Number(trimmed)
+    return Number.isFinite(numeric) ? numeric * 1000 : null
+  }
+
+  const units: Record<string, number> = {
+    Ki: 1024,
+    Mi: 1024 ** 2,
+    Gi: 1024 ** 3,
+    Ti: 1024 ** 4,
+    K: 1000,
+    M: 1000 ** 2,
+    G: 1000 ** 3,
+    T: 1000 ** 4
+  }
+  const matched = trimmed.match(/^([0-9]+(?:\.[0-9]+)?)([A-Za-z]+)?$/)
+  if (!matched) return null
+  const numeric = Number(matched[1])
+  if (!Number.isFinite(numeric)) return null
+  const unit = matched[2] || ''
+  return numeric * (units[unit] ?? 1)
+}
+
+function metricPercent(resource: KubeResourceItem, kind: 'cpu' | 'memory') {
+  const { usage, request, limit } = resourceMetricParts(resource, kind)
+  const denominator = parseMetricQuantity(limit || request, kind)
+  const numerator = parseMetricQuantity(usage, kind)
+  if (numerator === null || denominator === null || denominator <= 0) return 0
+  return Math.max(0, Math.min(100, Math.round((numerator / denominator) * 100)))
+}
+
+function metricRequestPercent(resource: KubeResourceItem, kind: 'cpu' | 'memory') {
+  const { request, limit } = resourceMetricParts(resource, kind)
+  const denominator = parseMetricQuantity(limit || request, kind)
+  const numerator = parseMetricQuantity(request, kind)
+  if (numerator === null || denominator === null || denominator <= 0) return 0
+  return Math.max(0, Math.min(100, Math.round((numerator / denominator) * 100)))
+}
+
+function metricBarClass(percent: number) {
+  if (percent >= 90) return 'bg-red-500'
+  if (percent >= 70) return 'bg-amber-500'
+  return 'bg-primary-500'
+}
+
+function metricRequestText(resource: KubeResourceItem, kind: 'cpu' | 'memory') {
+  return resourceMetricParts(resource, kind).request || '-'
+}
+
+function metricLimitText(resource: KubeResourceItem, kind: 'cpu' | 'memory') {
+  return resourceMetricParts(resource, kind).limit || '-'
+}
+
+function metricUsageText(resource: KubeResourceItem, kind: 'cpu' | 'memory') {
+  return resourceMetricParts(resource, kind).usage || '未返回'
+}
+
+function metricPercentText(resource: KubeResourceItem, kind: 'cpu' | 'memory') {
+  return `${metricPercent(resource, kind)}%`
+}
+
+function metricTooltipRows(resource: KubeResourceItem, kind: 'cpu' | 'memory') {
+  return [
+    { label: 'Usage', value: metricUsageText(resource, kind) },
+    { label: 'Request', value: metricRequestText(resource, kind) },
+    { label: 'Limit', value: metricLimitText(resource, kind) }
+  ]
+}
+
+function formatMetricQuantity(value: number, kind: 'cpu' | 'memory') {
+  if (!Number.isFinite(value) || value <= 0) return ''
+  if (kind === 'cpu') return `${Math.round(value)}m`
+  return `${Math.round(value / (1024 ** 2))}Mi`
+}
+
+function deploymentMetricPods(resource: KubeResourceItem) {
+  const app = resourceSelectorApp(resource)
+  const relatedPodNames = new Set(deploymentRelatedRows(resource).filter((item) => item.kind === 'Pod').map((item) => item.name))
+  return resources.value.filter((item) => {
+    if (!isPodResource(item) || item.clusterId !== resource.clusterId || item.namespace !== resource.namespace) return false
+    if (relatedPodNames.has(item.name)) return true
+    return Boolean(app && item.labels.app === app)
+  })
+}
+
+function monitoringTargets(resource: KubeResourceItem) {
+  if (isPodResource(resource)) return [resource]
+  if (isDeploymentResource(resource)) return deploymentMetricPods(resource)
+  return []
+}
+
+function aggregateMetricParts(targets: KubeResourceItem[], kind: 'cpu' | 'memory') {
+  const totals = { usage: 0, request: 0, limit: 0 }
+  const seen = { usage: false, request: false, limit: false }
+  targets.forEach((target) => {
+    const parts = resourceMetricParts(target, kind)
+    ;(['usage', 'request', 'limit'] as const).forEach((key) => {
+      const parsed = parseMetricQuantity(parts[key], kind)
+      if (parsed !== null) {
+        totals[key] += parsed
+        seen[key] = true
+      }
+    })
+  })
+  return {
+    usage: seen.usage ? formatMetricQuantity(totals.usage, kind) : '',
+    request: seen.request ? formatMetricQuantity(totals.request, kind) : '',
+    limit: seen.limit ? formatMetricQuantity(totals.limit, kind) : ''
+  }
+}
+
+function splitMetricQuantity(value: string, kind: 'cpu' | 'memory', divisor: number) {
+  const parsed = parseMetricQuantity(value, kind)
+  if (parsed === null || divisor <= 0) return ''
+  return formatMetricQuantity(parsed / divisor, kind)
+}
+
+function podContainerMetricParts(resource: KubeResourceItem, containerName: string, kind: 'cpu' | 'memory') {
+  const containers = podContainersFromResource(resource)
+  const index = Math.max(0, containers.findIndex((container) => String(container.name ?? '') === containerName))
+  const container = containers[index] ?? {}
+  const total = Math.max(1, containers.length)
+  const resources = asRecord(container.resources)
+  const requests = asRecord(resources.requests)
+  const limits = asRecord(resources.limits)
+  const podParts = resourceMetricParts(resource, kind)
+  const totalUsage = parseMetricQuantity(podParts.usage, kind)
+  const weight = total === 1 ? 1 : index === 0 ? 0.62 : 0.38 / Math.max(1, total - 1)
+  return {
+    usage: totalUsage === null ? '' : formatMetricQuantity(totalUsage * weight, kind),
+    request: String(requests[kind] ?? '') || splitMetricQuantity(podParts.request, kind, total),
+    limit: String(limits[kind] ?? '') || splitMetricQuantity(podParts.limit, kind, total)
+  }
+}
+
+function monitoringTargetOptions(resource: KubeResourceItem) {
+  if (isPodResource(resource)) {
+    return [
+      { label: 'All Containers', value: 'all' },
+      ...podContainerRows(resource).map((container) => ({ label: container.name, value: `container:${container.name}` }))
+    ]
+  }
+  if (isDeploymentResource(resource)) {
+    return [
+      { label: 'All Pods', value: 'all' },
+      ...deploymentMetricPods(resource).map((pod) => ({ label: pod.name, value: `pod:${pod.name}` }))
+    ]
+  }
+  return [{ label: 'All', value: 'all' }]
+}
+
+function ensureMonitoringTarget(resource: KubeResourceItem) {
+  const options = monitoringTargetOptions(resource)
+  if (!options.some((option) => option.value === activeMonitoringTarget.value)) {
+    activeMonitoringTarget.value = options[0]?.value ?? 'all'
+  }
+}
+
+function monitoringSelectedTargets(resource: KubeResourceItem) {
+  ensureMonitoringTarget(resource)
+  if (isDeploymentResource(resource) && activeMonitoringTarget.value.startsWith('pod:')) {
+    const podName = activeMonitoringTarget.value.slice('pod:'.length)
+    return deploymentMetricPods(resource).filter((pod) => pod.name === podName)
+  }
+  return monitoringTargets(resource)
+}
+
+function monitoringSelectionParts(resource: KubeResourceItem, kind: 'cpu' | 'memory') {
+  ensureMonitoringTarget(resource)
+  if (isPodResource(resource) && activeMonitoringTarget.value.startsWith('container:')) {
+    return podContainerMetricParts(resource, activeMonitoringTarget.value.slice('container:'.length), kind)
+  }
+  return aggregateMetricParts(monitoringSelectedTargets(resource), kind)
+}
+
+function monitoringMetricPercent(resource: KubeResourceItem, kind: 'cpu' | 'memory') {
+  const parts = monitoringSelectionParts(resource, kind)
+  const denominator = parseMetricQuantity(parts.limit || parts.request, kind)
+  const numerator = parseMetricQuantity(parts.usage, kind)
+  if (numerator === null || denominator === null || denominator <= 0) return 0
+  return Math.max(0, Math.min(100, Math.round((numerator / denominator) * 100)))
+}
+
+type MonitoringChartKind = 'cpu' | 'memory' | 'network' | 'disk'
+type MonitoringChartDefinition = {
+  kind: MonitoringChartKind
+  title: string
+  color: string
+  secondaryColor?: string
+  primaryLabel: string
+  secondaryLabel?: string
+  fill: string
+  unit: string
+  floor: number
+  shape: 'spike' | 'area' | 'dual'
+}
+type KubeMonitoringDataset = {
+  label: string
+  data: number[]
+  color: string
+  fill?: boolean
+  yAxisID?: 'y' | 'y1'
+  unit?: string
+}
+
+function monitoringSeriesValues(resource: KubeResourceItem, kind: MonitoringChartKind, channel: 'primary' | 'secondary' = 'primary') {
+  const seedSource = `${resource.name}-${activeMonitoringTarget.value}-${kind}-${channel}`
+  const seed = Array.from(seedSource).reduce((sum, char) => sum + char.charCodeAt(0), 0)
+  const percent = kind === 'cpu' || kind === 'memory' ? monitoringMetricPercent(resource, kind) : 0
+  const base = kind === 'cpu'
+    ? Math.max(0.02, percent / 100)
+    : kind === 'memory'
+      ? Math.max(1, parseMetricQuantity(monitoringSelectionParts(resource, 'memory').usage, 'memory') ?? 0) / (1024 ** 2)
+      : 0
+  return monitoringSampleIndexes().map((index) => {
+    if (kind === 'network') {
+      const spike = [2, 5, 8].includes((index + seed) % 11) ? 2 + ((seed + index) % 5) : 0
+      return channel === 'secondary' ? spike * 0.45 : spike
+    }
+    if (kind === 'disk') {
+      const spike = [3, 9].includes((index + seed) % 13) ? 0.8 + ((seed + index) % 4) * 0.4 : 0
+      return channel === 'secondary' ? spike * 0.6 : spike
+    }
+    const wave = Math.sin((seed + index * 13) / 11) * (kind === 'cpu' ? 0.04 : 18)
+    return Math.max(0, base + wave)
+  })
+}
+
+function monitoringSampleIndexes() {
+  const rangeSeconds = monitoringSelectedRange.value.seconds
+  const stepSeconds = monitoringSelectedStep.value.seconds
+  const rawCount = Math.max(2, Math.floor(rangeSeconds / stepSeconds) + 1)
+  const stride = Math.max(1, Math.ceil(rawCount / 240))
+  const indexes = Array.from({ length: rawCount }, (_, index) => index).filter((index) => index % stride === 0 || index === rawCount - 1)
+  return indexes
+}
+
+function monitoringTimeLabels() {
+  const rangeSeconds = monitoringSelectedRange.value.seconds
+  const stepSeconds = monitoringSelectedStep.value.seconds
+  const end = new Date('2026-05-30T02:00:00+08:00')
+  const start = new Date(end.getTime() - rangeSeconds * 1000)
+  return monitoringSampleIndexes().map((index) => {
+    const time = new Date(start.getTime() + index * stepSeconds * 1000)
+    const hh = String(time.getHours()).padStart(2, '0')
+    const mm = String(time.getMinutes()).padStart(2, '0')
+    const ss = String(time.getSeconds()).padStart(2, '0')
+    return `${hh}:${mm}:${ss}`
+  })
+}
+
+function monitoringChartCards(resource: KubeResourceItem) {
+  const chartDefinitions: MonitoringChartDefinition[] = [
+    { kind: 'cpu', title: 'CPU Usage', color: '#14b8a6', primaryLabel: 'Usage', fill: 'rgba(20, 184, 166, 0.10)', unit: 'cores', floor: 0.5, shape: 'spike' },
+    { kind: 'memory', title: 'Memory Usage', color: '#3b82f6', primaryLabel: 'Usage', fill: 'rgba(59, 130, 246, 0.16)', unit: 'MiB', floor: 512, shape: 'area' },
+    { kind: 'network', title: 'Network I/O', color: '#3b82f6', secondaryColor: '#14b8a6', primaryLabel: 'Ingress', secondaryLabel: 'Egress', fill: 'rgba(59, 130, 246, 0.14)', unit: 'B/s', floor: 30, shape: 'dual' },
+    { kind: 'disk', title: 'Disk I/O', color: '#8b5cf6', secondaryColor: '#f59e0b', primaryLabel: 'Read', secondaryLabel: 'Write', fill: 'rgba(139, 92, 246, 0.12)', unit: 'B/s', floor: 20, shape: 'dual' }
+  ]
+  const labels = monitoringTimeLabels()
+  return chartDefinitions.map((card) => {
+    const primary = monitoringSeriesValues(resource, card.kind)
+    const secondary = card.secondaryColor ? monitoringSeriesValues(resource, card.kind, 'secondary') : []
+    const datasets: KubeMonitoringDataset[] = [
+      {
+        label: card.primaryLabel,
+        data: primary,
+        color: card.color,
+        fill: card.shape !== 'spike',
+        unit: card.unit
+      }
+    ]
+    if (card.secondaryColor && card.secondaryLabel) {
+      datasets.push({
+        label: card.secondaryLabel,
+        data: secondary,
+        color: card.secondaryColor,
+        fill: true,
+        yAxisID: 'y1',
+        unit: card.unit
+      })
+    }
+    return {
+      ...card,
+      labels,
+      datasets,
+      rightAxis: datasets.some((dataset) => dataset.yAxisID === 'y1')
+    }
+  })
+}
+
+function monitoringTickLabel(value: number, kind: MonitoringChartKind) {
+  if (kind === 'cpu') return value.toFixed(3)
+  if (kind === 'memory') return `${value.toFixed(1)}Mi`
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}K`
+  return value >= 10 ? value.toFixed(0) : value.toFixed(1)
+}
+
+function monitoringTooltipLabel(value: number, label: string, unit = '', kind: MonitoringChartKind) {
+  const suffix = unit ? ` ${unit}` : ''
+  if (kind === 'cpu') return `${label}: ${value.toFixed(3)}${suffix}`
+  if (kind === 'memory') return `${label}: ${value.toFixed(2)}${suffix}`
+  return `${label}: ${value.toFixed(2)}${suffix}`
+}
+
+function monitoringSampleSummary() {
+  return `${monitoringSampleIndexes().length} points · ${monitoringSelectedStep.value.label}`
+}
+
+function monitoringHasUsage(resource: KubeResourceItem) {
+  return monitoringSelectedTargets(resource).some((target) => Boolean(
+    resourceMetricParts(target, 'cpu').usage ||
+    resourceMetricParts(target, 'memory').usage
+  ))
+}
+
+function monitoringUnavailableTitle(resource: KubeResourceItem) {
+  return isDeploymentResource(resource) ? '当前 Deployment 未返回 Pod 实时用量' : '当前 Pod 未返回实时用量'
+}
+
+function nodeDisplayName(resource: KubeResourceItem) {
+  return resource.nodeName || resource.node || String(resource.details.nodeName || '') || '-'
+}
+
+function nodeInternalIP(resource: KubeResourceItem) {
+  return String(resource.details.nodeInternalIP || resource.details.internalIP || resource.details.hostIP || '').trim()
+}
+
+function nodeExternalIP(resource: KubeResourceItem) {
+  return String(resource.details.nodeExternalIP || resource.details.externalIP || '').trim()
+}
+
+function visibleLabelPairs(resource: KubeResourceItem) {
+  const labels = labelPairs(resource.labels)
+  return currentDefinition.value.pod ? labels.slice(0, 2) : labels.slice(0, 3)
+}
+
+function hiddenLabelCount(resource: KubeResourceItem) {
+  const labels = labelPairs(resource.labels)
+  return Math.max(0, labels.length - (currentDefinition.value.pod ? 2 : 3))
+}
+
+function isRowSelected(resource: KubeResourceItem) {
+  return selectedResourceIds.has(resource.id)
+}
+
+function toggleResourceSelection(resource: KubeResourceItem) {
+  if (selectedResourceIds.has(resource.id)) {
+    selectedResourceIds.delete(resource.id)
+  } else {
+    selectedResourceIds.add(resource.id)
+  }
+}
+
+function toggleSelectAllVisible() {
+  if (allVisibleSelected.value) {
+    visibleSelectableResources.value.forEach((item) => selectedResourceIds.delete(item.id))
+    return
+  }
+  visibleSelectableResources.value.forEach((item) => selectedResourceIds.add(item.id))
+}
+
+function clearSelectedResources() {
+  selectedResourceIds.clear()
+}
+
+function resourceTypeForKind(kind: string) {
+  return kindResourceTypes[kind] ?? ''
+}
+
+function resourceSelectorApp(resource: KubeResourceItem) {
+  const selector = stringDetailValue(resource.details.selector)
+  const appSelector = selector.split(',').map((item) => item.trim()).find((item) => item.startsWith('app='))
+  return appSelector?.slice(4) || resource.labels.app || resource.name
+}
+
+function relationLabel(source: KubeResourceItem, target: KubeResourceItem) {
+  if (source.ownerReferences?.some((owner) => owner.name === target.name)) return '上级控制器'
+  if (target.ownerReferences?.some((owner) => owner.name === source.name)) return '直接拥有'
+  if (target.kind === 'Pod') return '匹配 Pod'
+  if (target.kind === 'Service') return '服务选择器'
+  if (target.kind === 'Endpoint' || target.kind === 'EndpointSlice') return '服务端点'
+  if (target.kind === 'ReplicaSet') return '副本集'
+  return '关联'
+}
+
+function buildRelatedResources(resource: KubeResourceItem, allResources: KubeResourceItem[]): RelatedResourceItem[] {
+  const directOwnerNames = new Set((resource.ownerReferences ?? []).map((owner) => owner.name))
+  const app = resourceSelectorApp(resource)
+  const childReplicaSets = allResources.filter((item) =>
+    item.kind === 'ReplicaSet' &&
+    item.namespace === resource.namespace &&
+    item.ownerReferences?.some((owner) => owner.name === resource.name && owner.kind === resource.kind)
+  )
+  const childReplicaSetNames = new Set(childReplicaSets.map((item) => item.name))
+
+  const related = allResources.filter((item) => {
+    if (item.id === resource.id || item.clusterId !== resource.clusterId || item.namespace !== resource.namespace) return false
+    if (directOwnerNames.has(item.name)) return true
+    if (item.ownerReferences?.some((owner) => owner.name === resource.name)) return true
+    if (childReplicaSetNames.has(item.name)) return true
+    if (item.ownerReferences?.some((owner) => childReplicaSetNames.has(owner.name))) return true
+    if (resource.kind === 'Deployment' && app && item.labels.app === app && ['Pod', 'Service', 'Endpoint', 'EndpointSlice'].includes(item.kind)) return true
+    return false
+  })
+
+  return related.map((item) => ({
+    kind: item.kind,
+    name: item.name,
+    namespace: item.namespace,
+    status: item.status,
+    resourceType: item.type,
+    relation: relationLabel(resource, item),
+    ready: item.ready
+  }))
+}
+
+function normalizeResourceItem(item: unknown, index: number, fallbackDefinition = currentDefinition.value): KubeResourceItem {
+  const partial = item as Partial<KubeResourceItem> & { resourceType?: string }
+  const type = partial.type ?? partial.resourceType ?? fallbackDefinition.type
+  const definition = resourceDefinitions[type] ?? fallbackDefinition
+  return {
+    ...makeResource(definition, index),
+    ...partial,
+    type,
+    resourceType: type,
+    kind: partial.kind ?? definition.kind,
+    clusterId: partial.clusterId ?? filters.clusterId,
+    labels: partial.labels ?? {},
+    annotations: partial.annotations ?? {},
+    ownerReferences: partial.ownerReferences ?? [],
+    related: partial.related ?? [],
+    events: partial.events ?? [],
+    yaml: partial.yaml ?? sampleYaml(definition.kind, partial.name ?? `resource-${index + 1}`, partial.namespace)
+  }
+}
+
+function normalizeKnownResources(currentItems: KubeResourceItem[]) {
+  const knownResources = getDataExport<unknown[]>('kubeResourceSummaries')
+  if (!Array.isArray(knownResources)) return currentItems
+  return knownResources.map((item, index) => {
+    const partial = item as { resourceType?: string; type?: string }
+    const type = partial.type ?? partial.resourceType ?? currentDefinition.value.type
+    return normalizeResourceItem(item, index, resourceDefinitions[type] ?? currentDefinition.value)
+  })
+}
+
+function normalizeResourceList(value: unknown): KubeResourceItem[] {
+  const candidate = Array.isArray(value) ? value : typeof value === 'object' && value !== null ? (value as { items?: unknown }).items : undefined
+  if (!Array.isArray(candidate)) return buildFallbackResources()
+  const normalized = candidate.map((item, index) => normalizeResourceItem(item, index))
+  const relatedSource = normalizeKnownResources(normalized)
+  return normalized.map((item) => ({
+    ...item,
+    related: item.related.length ? item.related : buildRelatedResources(item, relatedSource)
+  }))
+}
+
 function statusClass(status: ResourceStatus | string) {
-  if (['Running', 'Ready', 'Succeeded', 'Bound', 'Active'].includes(status)) return 'badge-success'
+  if (['Running', 'Ready', 'Succeeded', 'Bound', 'Active', 'Available', 'Complete'].includes(status)) return 'badge-success'
   if (status === 'Pending') return 'badge-primary'
-  if (status === 'Warning' || status === 'Terminating') return 'badge-warning'
+  if (['Warning', 'Terminating', 'Degraded'].includes(status)) return 'badge-warning'
   return 'badge-danger'
 }
 
@@ -733,7 +2159,7 @@ function updateScalarField(key: keyof CreateFormState, value: string | number | 
 function updateTextField(key: keyof CreateFormState, event: Event) {
   const previousName = key === 'name' ? createForm.name : ''
   updateScalarField(key, inputValue(event))
-  if (key === 'name' && createDefinition.value.type === 'deployments') {
+  if (key === 'name' && usesPodSpecCreateForm.value) {
     const appLabel = createForm.labels.find((pair) => pair.key === 'app')
     if (!appLabel) {
       createForm.labels.unshift({ id: nextEntryId('pair'), key: 'app', value: createForm.name })
@@ -763,7 +2189,8 @@ function addPair(key: keyof CreateFormState) {
   markFormSource()
   const value = createForm[key]
   if (Array.isArray(value)) {
-    ;(value as KeyValuePair[]).push({ id: nextEntryId('pair'), key: '', value: '' })
+    const list = value as KeyValuePair[]
+    list.push({ id: nextEntryId('pair'), key: '', value: '' })
   }
 }
 
@@ -1221,8 +2648,9 @@ function setStrategyPanel(panel: StrategyPanel) {
 
 function resetCollapsedSections() {
   for (const key of Object.keys(collapsedSections)) delete collapsedSections[key]
-  if (createDefinition.value.type === 'deployments') {
-    ;['deployment', 'pod-template', 'pod-security', 'pod-network', 'pod-storage', 'deployment-strategy', 'pod-scheduling', 'node-scheduling', 'yaml-template'].forEach((key) => {
+  if (usesPodSpecCreateForm.value) {
+    const initiallyCollapsedSections = ['deployment', 'pod-template', 'pod-security', 'pod-network', 'pod-storage', 'deployment-strategy', 'pod-scheduling', 'node-scheduling', 'yaml-template']
+    initiallyCollapsedSections.forEach((key) => {
       collapsedSections[key] = true
     })
     currentCreateSchema.value?.sections.forEach((section) => {
@@ -1317,6 +2745,13 @@ function onVolumeMountSelect(mount: VolumeMountEntry, value: string | number | b
     if (volume.type === 'configMap' || volume.type === 'secret') mount.readOnly = true
   }
   syncLegacyFieldsFromActiveAppContainer()
+}
+
+function updateVolumeMountReadOnly(mount: VolumeMountEntry, event: Event) {
+  markFormSource()
+  mount.readOnly = (event.target as HTMLInputElement | null)?.checked ?? false
+  syncLegacyFieldsFromActiveAppContainer()
+  syncYamlFromForm()
 }
 
 function addVolumeMount(type: MountPanel = activeMountPanel.value) {
@@ -1524,7 +2959,8 @@ function relatedPairList(key: keyof CreateFormState) {
 function addRelatedPair(key: keyof CreateFormState) {
   const value = relatedForm[key]
   if (Array.isArray(value)) {
-    ;(value as KeyValuePair[]).push({ id: nextEntryId('related-pair'), key: '', value: '' })
+    const list = value as KeyValuePair[]
+    list.push({ id: nextEntryId('related-pair'), key: '', value: '' })
   }
 }
 
@@ -1777,10 +3213,10 @@ function applyYamlTemplate(templateId: YamlTemplateId | string | number | boolea
 }
 
 function yamlSyntaxStatus() {
-  const parsed = parseKubeYaml(formState.yaml)
   if (!formState.yaml.trim()) return { status: 'warning' as const, text: 'YAML 为空' }
+  const parsed = parseKubeYamlDocuments(formState.yaml)
   if (!parsed.ok || !parsed.value) return { status: 'error' as const, text: 'YAML 语法错误' }
-  return { status: 'ok' as const, text: 'YAML 语法有效' }
+  return { status: 'ok' as const, text: parsed.values && parsed.values.length > 1 ? `YAML ${parsed.values.length} 个资源` : 'YAML 语法有效' }
 }
 
 function syncActiveInitContainer() {
@@ -1800,7 +3236,16 @@ function syncYamlFromForm() {
   syncLegacyFieldsFromActiveAppContainer()
   formState.name = createForm.name
   formState.namespace = definition.namespaced ? createForm.namespace : ''
-  formState.yaml = stringifyKubeObject(schema.toObject(createForm))
+  const object = schema.toObject(createForm)
+  const documents = currentYamlDocuments()
+  if (documents.length > 1) {
+    const index = Math.min(Math.max(activeYamlDocumentIndex.value, 0), documents.length - 1)
+    activeYamlDocumentIndex.value = index
+    const nextDocuments = documents.map((item, itemIndex) => itemIndex === index ? object : item)
+    formState.yaml = stringifyKubeObjects(nextDocuments)
+  } else {
+    formState.yaml = stringifyKubeObject(object)
+  }
   yamlParseError.value = ''
   scheduleYamlResize()
 }
@@ -1820,22 +3265,45 @@ function applyYamlToCreateForm(object: Record<string, unknown>) {
   formState.namespace = definition.namespaced ? createForm.namespace : ''
 }
 
+function currentYamlDocuments() {
+  const parsed = parseKubeYamlDocuments(formState.yaml)
+  return parsed.ok && parsed.values?.length ? parsed.values : []
+}
+
+function activeYamlObjectFromDocuments(values: Record<string, unknown>[]) {
+  const index = Math.min(Math.max(activeYamlDocumentIndex.value, 0), Math.max(values.length - 1, 0))
+  activeYamlDocumentIndex.value = index
+  return values[index]
+}
+
+function setActiveYamlDocument(index: number) {
+  const values = currentYamlDocuments()
+  if (!values.length) return
+  activeYamlDocumentIndex.value = Math.min(Math.max(index, 0), values.length - 1)
+  syncingFromYaml.value = true
+  applyYamlToCreateForm(values[activeYamlDocumentIndex.value])
+  void nextTick(() => {
+    syncingFromYaml.value = false
+  })
+}
+
 function syncFormFromYaml() {
-  const parsed = parseKubeYaml(formState.yaml)
-  if (!parsed.ok || !parsed.value) {
+  const parsed = parseKubeYamlDocuments(formState.yaml)
+  if (!parsed.ok || !parsed.values?.length) {
     yamlParseError.value = parsed.error ?? 'YAML 解析失败。'
     return null
   }
 
   yamlParseError.value = ''
+  const object = activeYamlObjectFromDocuments(parsed.values)
   if (currentCreateSchema.value) {
     syncingFromYaml.value = true
-    applyYamlToCreateForm(parsed.value)
+    applyYamlToCreateForm(object)
     void nextTick(() => {
       syncingFromYaml.value = false
     })
   }
-  return parsed.value
+  return object
 }
 
 function onYamlInput(event: Event) {
@@ -1854,10 +3322,15 @@ function onRawYamlInput(event: Event) {
 }
 
 function setCreateMode(mode: CreateMode) {
+  const previousMode = createMode.value
   createMode.value = mode
   formErrors.value = []
   if (mode === 'form') {
-    syncYamlFromForm()
+    if (previousMode === 'yaml') {
+      syncFormFromYaml()
+    } else {
+      syncYamlFromForm()
+    }
   } else {
     syncFormFromYaml()
     scheduleYamlResize()
@@ -1878,6 +3351,14 @@ function yamlMetadata(object: Record<string, unknown>) {
   return object.metadata && typeof object.metadata === 'object' && !Array.isArray(object.metadata)
     ? object.metadata as Record<string, unknown>
     : {}
+}
+
+function yamlObjectName(object: Record<string, unknown>) {
+  return String(yamlMetadata(object).name ?? '').trim()
+}
+
+function yamlObjectNamespace(object: Record<string, unknown>, namespaceFallback = formState.namespace || createForm.namespace) {
+  return String(yamlMetadata(object).namespace ?? namespaceFallback ?? '').trim()
 }
 
 function validateYamlObject(object: Record<string, unknown>, targetDefinition = createDefinition.value, namespaceFallback = formState.namespace || createForm.namespace) {
@@ -1904,13 +3385,16 @@ function validateYamlContent(value: string, targetDefinition = createDefinition.
   if (!value.trim()) {
     return [{ status: 'warning', text: 'YAML 为空。' }]
   }
-  const parsed = parseKubeYaml(value)
-  if (!parsed.ok || !parsed.value) {
+  const parsed = parseKubeYamlDocuments(value)
+  if (!parsed.ok || !parsed.value || !parsed.values?.length) {
     return [{ status: 'error', text: parsed.error ?? 'YAML 解析失败。' }]
   }
-  const errors = validateYamlObject(parsed.value, targetDefinition, namespaceFallback)
+  const values = parsed.values
+  const errors = values.flatMap((object, index) =>
+    validateYamlObject(object, targetDefinition, namespaceFallback).map((error) => values.length > 1 ? `第 ${index + 1} 个资源：${error}` : error)
+  )
   return [
-    { status: 'ok', text: 'YAML 语法有效。' },
+    { status: 'ok', text: values.length > 1 ? `YAML 语法有效，检测到 ${values.length} 个资源；可通过资源切换条编辑任一资源，提交会保留完整 YAML。` : 'YAML 语法有效。' },
     ...errors.map((error) => ({ status: 'warning' as const, text: error }))
   ]
 }
@@ -1942,9 +3426,69 @@ function highlightYaml(value: string) {
   return value.split('\n').map(highlightYamlLine).join('\n')
 }
 
-function selectResource(resource: KubeResourceItem) {
+function setSelectedResource(resource: KubeResourceItem) {
   selectedResource.value = resource
+}
+
+function openResourceDetail(resource: KubeResourceItem) {
+  setSelectedResource(resource)
   activeDetailTab.value = 'overview'
+  detailYamlDraft.value = resource.yaml
+  detailYamlError.value = ''
+  selectedContainerName.value = ''
+  containerDetailOpen.value = false
+  activeMonitoringTarget.value = 'all'
+  activeMonitoringIndex.value = null
+  detailPanelOpen.value = true
+}
+
+function closeResourceDetail() {
+  detailPanelOpen.value = false
+  containerDetailOpen.value = false
+}
+
+function relatedResourcePath(resource: RelatedResourceItem | KubeResourceItem) {
+  const type = resource.resourceType || resourceTypeForKind(resource.kind)
+  return resourceRoutes[type] ?? ''
+}
+
+async function navigateToResource(resource: RelatedResourceItem | KubeResourceItem) {
+  const path = relatedResourcePath(resource)
+  if (!path) return
+  detailPanelOpen.value = false
+  await router.push({
+    path,
+    query: {
+      namespace: resource.namespace,
+      name: resource.name,
+      detail: resource.name
+    }
+  })
+}
+
+async function navigateToNodeDetail(resource: KubeResourceItem) {
+  const name = nodeDisplayName(resource)
+  if (!name || name === '-') return
+  detailPanelOpen.value = false
+  await router.push({
+    path: '/other/nodes',
+    query: {
+      name,
+      detail: name
+    }
+  })
+}
+
+async function navigateToWorkloadPods(resource: KubeResourceItem) {
+  const app = resourceSelectorApp(resource)
+  detailPanelOpen.value = false
+  await router.push({
+    path: '/pods',
+    query: {
+      namespace: resource.namespace,
+      labels: app ? `app=${app}` : undefined
+    }
+  })
 }
 
 async function refreshResources() {
@@ -1955,8 +3499,22 @@ async function refreshResources() {
     const dataFallback = getDataExport<unknown>('kubeResources') ?? buildFallbackResources()
     const result = await callApi(['listKubeResources', 'listResources', 'getKubeResourceList'], [{ resourceType: currentDefinition.value.type, ...filters, page: page.value, pageSize: pageSize.value }], dataFallback)
     resources.value = normalizeResourceList(result)
-    if (!selectedResource.value || selectedResource.value.type !== currentDefinition.value.type) {
-      selectedResource.value = filteredResources.value[0] ?? null
+    selectedResourceIds.forEach((id) => {
+      if (!resources.value.some((item) => item.id === id)) selectedResourceIds.delete(id)
+    })
+    if (selectedResource.value) {
+      const refreshedResource = filteredResources.value.find((item) => item.id === selectedResource.value?.id && item.clusterId === selectedResource.value?.clusterId)
+      if (refreshedResource) {
+        selectedResource.value = refreshedResource
+      } else {
+        selectedResource.value = null
+        detailPanelOpen.value = false
+      }
+    }
+    const detailName = queryStringValue(route.query.detail)
+    if (detailName) {
+      const detailResource = filteredResources.value.find((item) => item.name === detailName)
+      if (detailResource) openResourceDetail(detailResource)
     }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '资源列表加载失败'
@@ -1985,11 +3543,12 @@ function openCreate() {
   activeLifecyclePanel.value = 'postStart'
   activeStrategyPanel.value = 'strategy'
   activeYamlTemplate.value = 'web'
+  activeYamlDocumentIndex.value = 0
   const definition = createDefinition.value
   const namespace = defaultNamespaceFor(definition)
   const nextForm = createDefaultForm(definition.type, definition.kind, namespace)
   nextForm.name = `${definition.type}-sample`
-  if (definition.type === 'deployments') {
+  if (definition.type === 'deployments' || definition.type === 'pods') {
     nextForm.labels = [{ id: 'app', key: 'app', value: nextForm.name }]
   }
   setCreateForm(nextForm)
@@ -2010,6 +3569,7 @@ function openCreate() {
 function openEdit(resource: KubeResourceItem) {
   editMode.value = 'edit'
   createMode.value = 'yaml'
+  activeYamlDocumentIndex.value = 0
   formErrors.value = []
   yamlParseError.value = ''
   formState.name = resource.name
@@ -2034,6 +3594,8 @@ async function submitForm() {
   let yaml = formState.yaml
   let name = formState.name
   let namespace = formState.namespace
+  let createdNames: string[] = []
+  let createdNamespaces: string[] = []
 
   if (editMode.value === 'create' && hasCreateSchema.value) {
     if (createMode.value === 'form') {
@@ -2046,19 +3608,36 @@ async function submitForm() {
       yaml = formState.yaml
       name = createForm.name
       namespace = definition.namespaced ? createForm.namespace : ''
+      createdNames = name ? [name] : []
+      createdNamespaces = namespace ? [namespace] : []
     } else {
-      const object = syncFormFromYaml()
-      if (!object) {
+      const parsed = parseKubeYamlDocuments(formState.yaml)
+      if (!parsed.ok || !parsed.value || !parsed.values?.length) {
+        yamlParseError.value = parsed.error ?? 'YAML 解析失败。'
         formErrors.value = [yamlParseError.value || 'YAML 解析失败。']
         return
       }
-      const errors = validateYamlObject(object)
+      const objects = parsed.values
+      const errors = objects.flatMap((object, index) =>
+        validateYamlObject(object).map((error) => objects.length > 1 ? `第 ${index + 1} 个资源：${error}` : error)
+      )
       if (errors.length) {
         formErrors.value = errors
         return
       }
-      name = createForm.name || name
-      namespace = definition.namespaced ? (createForm.namespace || namespace) : ''
+      syncingFromYaml.value = true
+      const object = activeYamlObjectFromDocuments(objects)
+      applyYamlToCreateForm(object)
+      await nextTick()
+      syncingFromYaml.value = false
+      const names = objects.map(yamlObjectName).filter(Boolean)
+      const namespaces = definition.namespaced
+        ? Array.from(new Set(objects.map((object) => yamlObjectNamespace(object)).filter(Boolean)))
+        : []
+      createdNames = names
+      createdNamespaces = namespaces
+      name = names.length > 1 ? names.join(', ') : (names[0] || createForm.name || name)
+      namespace = definition.namespaced && namespaces.length === 1 ? namespaces[0] : (definition.namespaced ? '' : '')
     }
   } else {
     const parsed = parseKubeYaml(formState.yaml)
@@ -2079,7 +3658,10 @@ async function submitForm() {
     resourceType: definition.type,
     namespace: namespace || undefined,
     name,
-    yaml
+    yaml,
+    resourceCount: createMode.value === 'yaml' && editMode.value === 'create'
+      ? parseKubeYamlDocuments(yaml).values?.length ?? 1
+      : 1
   }
   await callApi(
     editMode.value === 'create' ? ['createKubeResource', 'createResource'] : ['updateKubeResource', 'updateResource'],
@@ -2087,24 +3669,25 @@ async function submitForm() {
     { ok: true }
   )
   editDialogOpen.value = false
-  successMessage.value = editMode.value === 'create' ? '创建请求已提交' : '编辑请求已提交'
+  const resourceCount = Number(payload.resourceCount ?? 1)
+  successMessage.value = editMode.value === 'create'
+    ? (resourceCount > 1 ? `批量创建请求已提交（${resourceCount} 个资源）` : '创建请求已提交')
+    : '编辑请求已提交'
+  if (editMode.value === 'create' && definition.namespaced) {
+    if (resourceCount > 1 || (createdNamespaces.length && !createdNamespaces.includes(filters.namespace))) {
+      filters.namespace = 'all-namespaces'
+    } else if (namespace) {
+      filters.namespace = namespace
+    }
+  }
+  filters.status = 'all'
+  filters.name = ''
+  filters.labels = ''
+  filters.keyword = ''
   await refreshResources()
-}
-
-function openYaml(resource: KubeResourceItem) {
-  selectResource(resource)
-  yamlDraft.value = resource.yaml
-  yamlDialogOpen.value = true
-}
-
-function openApplyYaml() {
-  if (!selectedResource.value) return
-  pendingConfirm.value = {
-    action: 'apply-yaml',
-    title: '确认应用 YAML',
-    message: `将对 ${currentDefinition.value.kind}/${selectedResource.value.name} 应用 YAML，后端会再次校验权限和资源范围。`,
-    resource: selectedResource.value,
-    payload: { yaml: yamlDraft.value || selectedResource.value.yaml }
+  if (createdNames.length && selectedResource.value && !createdNames.includes(selectedResource.value.name)) {
+    selectedResource.value = null
+    detailPanelOpen.value = false
   }
 }
 
@@ -2112,8 +3695,18 @@ function openDelete(resource: KubeResourceItem) {
   pendingConfirm.value = {
     action: 'delete',
     title: '确认删除资源',
-    message: `删除 ${resource.kind}/${resource.name} 属于高风险操作，请确认后继续。`,
+    message: `确认删除 ${resource.kind}/${resource.name}？`,
     resource
+  }
+}
+
+function openBulkDelete() {
+  if (!selectedResources.value.length) return
+  pendingConfirm.value = {
+    action: 'bulk-delete',
+    title: '确认批量删除资源',
+    message: `确认批量删除已选中的 ${selectedResources.value.length} 个${currentDefinition.value.title}资源？`,
+    resources: [...selectedResources.value]
   }
 }
 
@@ -2122,61 +3715,63 @@ function openWorkloadAction(resource: KubeResourceItem, action: ConfirmAction) {
   actionForm.replicas = resource.desiredReplicas ?? resource.replicas ?? 1
   actionForm.image = resource.image ?? ''
   actionForm.rollbackRevision = 'previous'
-  selectResource(resource)
+  setSelectedResource(resource)
   actionDialogOpen.value = true
 }
 
-function confirmWorkloadAction() {
+async function confirmWorkloadAction() {
   if (!selectedResource.value) return
   const payload = {
     replicas: actionForm.replicas,
     image: actionForm.image,
     revision: actionForm.rollbackRevision
   }
-  const labels: Record<ConfirmAction, string> = {
-    scale: '扩缩容',
-    restart: '重启',
-    'update-image': '更新镜像',
-    rollback: '回滚',
-    delete: '删除',
-    'apply-yaml': '应用 YAML',
-    terminal: '进入终端',
-    drain: 'drain 节点',
-    cordon: 'cordon 节点',
-    uncordon: 'uncordon 节点',
-    'reveal-secret': '查看 Secret 明文'
-  }
-  pendingConfirm.value = {
-    action: actionForm.action,
-    title: `确认${labels[actionForm.action]}`,
-    message: `${labels[actionForm.action]} ${selectedResource.value.kind}/${selectedResource.value.name} 会写入审计并由后端复核权限。`,
-    resource: selectedResource.value,
-    payload
-  }
+  await performConfirmedAction(actionForm.action, selectedResource.value, payload, workloadActionDialogTitle.value)
+  actionDialogOpen.value = false
 }
 
 async function openLogs(resource: KubeResourceItem, follow = false) {
-  selectResource(resource)
+  setSelectedResource(resource)
   logsDialogOpen.value = true
+  const fallback = [
+    `[${new Date().toISOString()}] ${resource.name} container started`,
+    `[${new Date().toISOString()}] readiness probe ${resource.status === 'Warning' ? 'failed' : 'succeeded'}`,
+    follow ? '[stream] 实时日志连接已建立，等待后端 SSE / WebSocket 接入。' : '[tail] 最近 200 行日志已加载。'
+  ].join('\n')
   logsText.value = '日志加载中...'
-  logsText.value = await callApi(
+  const text = await callApi(
     ['getKubePodLogs', 'getPodLogs'],
     [{ clusterId: filters.clusterId, namespace: resource.namespace, podName: resource.name, follow, tailLines: 200 }],
-    [
-      `[${new Date().toISOString()}] ${resource.name} container started`,
-      `[${new Date().toISOString()}] readiness probe ${resource.status === 'Warning' ? 'failed' : 'succeeded'}`,
-      follow ? '[stream] 实时日志连接已建立，等待后端 SSE / WebSocket 接入。' : '[tail] 最近 200 行日志已加载。'
-    ].join('\n')
+    fallback
   )
+  logsText.value = typeof text === 'string' && text.trim() ? text : fallback
 }
 
 function openTerminal(resource: KubeResourceItem) {
-  pendingConfirm.value = {
+  setSelectedResource(resource)
+  const containers = podTerminalContainerOptions(resource)
+  terminalContainerName.value = containers[0]?.value ?? ''
+  terminalCommandPreset.value = '/bin/sh'
+  terminalCustomCommand.value = ''
+  terminalSessionMessage.value = ''
+  terminalDialogOpen.value = true
+}
+
+async function connectTerminal() {
+  if (!selectedResource.value) return
+  terminalSessionMessage.value = '正在提交终端连接请求...'
+  await performHighRiskAction({
+    confirm: true,
     action: 'terminal',
-    title: '确认进入 Pod 终端',
-    message: `进入 ${resource.name} 终端会被审计记录，请确认已获得授权。`,
-    resource
-  }
+    clusterId: filters.clusterId,
+    resourceType: selectedResource.value.type,
+    kind: selectedResource.value.kind,
+    namespace: selectedResource.value.namespace,
+    name: selectedResource.value.name,
+    container: terminalContainerName.value,
+    command: terminalCommand.value
+  })
+  terminalSessionMessage.value = '终端连接请求已提交，WebSocket 将由后端 API-017 接入。'
 }
 
 function openNodeAction(resource: KubeResourceItem, action: 'drain' | 'cordon' | 'uncordon') {
@@ -2204,7 +3799,6 @@ async function performHighRiskAction(payload: Record<string, unknown>) {
 
   const action = String(payload.action ?? '')
   if (action === 'delete') return await callApi(['deleteKubeResource', 'deleteResource'], [payload], { ok: true })
-  if (action === 'apply-yaml') return await callApi(['applyKubeYaml', 'applyYaml'], [payload], { ok: true })
   if (action === 'reveal-secret') {
     return await callApi(['revealKubeSecret', 'revealSecret'], [payload], { data: { username: 'admin', password: '临时明文示例' } })
   }
@@ -2213,19 +3807,16 @@ async function performHighRiskAction(payload: Record<string, unknown>) {
   return await callApi(['performKubeWorkloadAction', 'performWorkloadAction'], [payload], { ok: true })
 }
 
-async function confirmHighRisk() {
-  if (!pendingConfirm.value) return
-  const resource = pendingConfirm.value.resource
-  const action = pendingConfirm.value.action
+async function performConfirmedAction(action: ConfirmAction, resource: KubeResourceItem | undefined, payload: Record<string, unknown> = {}, title = '确认操作') {
   const response = await performHighRiskAction({
     confirm: true,
     action,
     clusterId: filters.clusterId,
-    resourceType: currentDefinition.value.type,
+    resourceType: resource?.type ?? currentDefinition.value.type,
     kind: resource?.kind ?? currentDefinition.value.kind,
     namespace: resource?.namespace,
     name: resource?.name,
-    ...(pendingConfirm.value.payload ?? {})
+    ...payload
   })
 
   if (action === 'reveal-secret') {
@@ -2235,13 +3826,40 @@ async function confirmHighRisk() {
   } else if (action === 'terminal') {
     terminalDialogOpen.value = true
   } else {
-    successMessage.value = `${pendingConfirm.value.title}请求已提交`
+    successMessage.value = `${title}请求已提交`
+  }
+
+  await refreshResources()
+}
+
+async function performBulkDelete(resourcesToDelete: KubeResourceItem[], title = '确认批量删除资源') {
+  for (const resource of resourcesToDelete) {
+    await performHighRiskAction({
+      confirm: true,
+      action: 'delete',
+      clusterId: filters.clusterId,
+      resourceType: resource.type,
+      kind: resource.kind,
+      namespace: resource.namespace,
+      name: resource.name
+    })
+  }
+  clearSelectedResources()
+  await refreshResources()
+  successMessage.value = `${title}请求已提交`
+}
+
+async function confirmHighRisk() {
+  if (!pendingConfirm.value) return
+  const action = pendingConfirm.value.action
+  if (action === 'bulk-delete') {
+    await performBulkDelete(pendingConfirm.value.resources ?? [], pendingConfirm.value.title)
+  } else {
+    await performConfirmedAction(action, pendingConfirm.value.resource, pendingConfirm.value.payload ?? {}, pendingConfirm.value.title)
   }
 
   pendingConfirm.value = null
   actionDialogOpen.value = false
-  yamlDialogOpen.value = action === 'apply-yaml' ? false : yamlDialogOpen.value
-  await refreshResources()
 }
 
 function closeSecretDialog() {
@@ -2263,13 +3881,29 @@ watch(currentResourceType, () => {
   filters.labels = ''
   filters.keyword = ''
   filters.namespace = currentDefinition.value.namespaced ? 'all-namespaces' : 'cluster-scope'
+  applyRouteFiltersFromQuery()
   page.value = 1
   selectedResource.value = null
+  detailPanelOpen.value = false
+  showColumnDropdown.value = false
+  loadHiddenColumns()
   refreshResources()
 })
 
-watch([() => filters.namespace, () => filters.name, () => filters.labels, () => filters.status, () => filters.keyword, pageSize], () => {
+watch(() => route.query, () => {
+  applyRouteFiltersFromQuery()
   page.value = 1
+  selectedResource.value = null
+  detailPanelOpen.value = false
+  refreshResources()
+})
+
+watch([() => filters.namespace, () => filters.nodeName, () => filters.name, () => filters.labels, () => filters.status, () => filters.keyword, pageSize], () => {
+  page.value = 1
+})
+
+watch(() => currentDefinition.value.type, () => {
+  if (!currentDefinition.value.pod) filters.nodeName = 'all-nodes'
 })
 
 watch(createForm, () => {
@@ -2282,10 +3916,22 @@ watch(createForm, () => {
 watch(() => formState.yaml, scheduleYamlResize)
 
 onMounted(() => {
+  loadHiddenColumns()
+  document.addEventListener('click', handleClickOutside)
   const clusterData = getDataExport<ClusterOption[]>('kubeClusters')
-  if (Array.isArray(clusterData)) clusters.value = clusterData
+  if (Array.isArray(clusterData)) {
+    clusters.value = clusterData
+    if (!clusters.value.some((cluster) => cluster.id === filters.clusterId) && clusters.value[0]) {
+      filters.clusterId = clusters.value[0].id
+    }
+  }
   if (!currentDefinition.value.namespaced) filters.namespace = 'cluster-scope'
+  applyRouteFiltersFromQuery()
   refreshResources()
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', handleClickOutside)
 })
 </script>
 
@@ -2307,6 +3953,30 @@ onMounted(() => {
             <Icon name="refresh" size="sm" :class="{ 'animate-spin': loading }" />
             刷新
           </button>
+          <div ref="columnDropdownRef" class="relative">
+            <button class="btn btn-secondary" type="button" title="列设置" @click.stop="showColumnDropdown = !showColumnDropdown">
+              <Icon name="viewColumns" size="sm" />
+              列设置
+            </button>
+            <div v-if="showColumnDropdown" class="absolute right-0 top-full z-50 mt-1 max-h-96 w-52 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-dark-600 dark:bg-dark-800">
+              <button
+                v-for="column in toggleableColumns"
+                :key="column.key"
+                type="button"
+                class="flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-700"
+                @click="toggleColumn(column.key)"
+              >
+                <span class="truncate">{{ column.label }}</span>
+                <Icon v-if="isColumnVisible(column.key)" name="check" size="sm" class="shrink-0 text-primary-500" :stroke-width="2" />
+              </button>
+              <div class="mt-1 border-t border-gray-100 pt-1 dark:border-dark-700">
+                <button class="flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-sm text-gray-500 hover:bg-gray-100 dark:text-dark-300 dark:hover:bg-dark-700" type="button" @click="resetVisibleColumns">
+                  <span>恢复默认列</span>
+                  <Icon name="refresh" size="sm" />
+                </button>
+              </div>
+            </div>
+          </div>
           <button class="btn btn-primary" type="button" :disabled="currentDefinition.createDisabled" @click="openCreate">
             <Icon name="plus" size="sm" />
             创建
@@ -2314,13 +3984,26 @@ onMounted(() => {
         </div>
       </div>
       <div class="card-body space-y-4">
-        <div class="grid gap-3 lg:grid-cols-6">
+        <div :class="currentDefinition.pod ? 'grid gap-3 lg:grid-cols-4 xl:grid-cols-6 2xl:grid-cols-7' : 'grid gap-3 lg:grid-cols-6'">
           <Select v-model="filters.clusterId" :options="clusterOptions" searchable @change="refreshResources" />
           <Select v-model="filters.namespace" :options="computedNamespaceOptions" :disabled="!currentDefinition.namespaced" searchable />
+          <Select v-if="currentDefinition.pod" v-model="filters.nodeName" :options="computedNodeOptions" searchable />
           <input v-model="filters.name" class="input" placeholder="按名称筛选" />
           <input v-model="filters.labels" class="input" placeholder="标签 app=console" />
           <Select v-model="filters.status" :options="statusOptions.map((status) => ({ label: status === 'all' ? '全部状态' : status, value: status }))" />
           <input v-model="filters.keyword" class="input" type="search" placeholder="搜索" />
+        </div>
+        <div v-if="selectedResources.length && !currentDefinition.deleteDisabled" class="flex flex-col gap-3 rounded-xl border border-primary-200 bg-primary-50 px-4 py-3 dark:border-primary-900/40 dark:bg-primary-950/20 sm:flex-row sm:items-center sm:justify-between">
+          <div class="text-sm text-primary-800 dark:text-primary-200">
+            已选中 <span class="font-semibold">{{ selectedResources.length }}</span> 个{{ currentDefinition.title }}资源
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button class="btn btn-danger btn-sm" type="button" @click="openBulkDelete">
+              <Icon name="trash" size="sm" />
+              批量删除
+            </button>
+            <button class="btn btn-secondary btn-sm" type="button" @click="clearSelectedResources">清空选择</button>
+          </div>
         </div>
         <div v-if="errorMessage" class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-300">
           {{ errorMessage }}
@@ -2328,16 +4011,46 @@ onMounted(() => {
         <div v-if="successMessage" class="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-300">
           {{ successMessage }}
         </div>
+        <div v-if="currentDefinition.pod && !metricsAvailable" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-300">
+          {{ metricsUnavailableMessage }}
+        </div>
       </div>
     </section>
 
     <section class="card">
       <div class="card-body">
         <DataTable :columns="tableColumns" :data="pagedResources" :loading="loading" row-key="id" default-sort-key="name" :sort-storage-key="`kube-${currentDefinition.type}-sort`">
+          <template #header-select>
+            <input
+              :checked="allVisibleSelected"
+              :indeterminate.prop="someVisibleSelected && !allVisibleSelected"
+              type="checkbox"
+              class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+              :disabled="!visibleSelectableResources.length"
+              @change="toggleSelectAllVisible"
+            >
+          </template>
+          <template #cell-select="{ row }">
+            <input
+              :checked="isRowSelected(row)"
+              type="checkbox"
+              class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+              :disabled="currentDefinition.deleteDisabled"
+              @change="toggleResourceSelection(row)"
+            >
+          </template>
           <template #cell-name="{ row }">
-            <button class="text-left font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400" type="button" @click="selectResource(row)">
+            <button
+              v-if="isPodResource(row) || isDeploymentResource(row)"
+              class="text-left font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400"
+              type="button"
+              @click="openResourceDetail(row)"
+            >
               {{ row.name }}
             </button>
+            <span v-else class="text-left font-medium text-gray-900 dark:text-white">
+              {{ row.name }}
+            </span>
             <p class="mt-1 text-xs text-gray-400 dark:text-dark-500">{{ row.kind }}</p>
           </template>
           <template #cell-status="{ row }">
@@ -2346,22 +4059,74 @@ onMounted(() => {
           <template #cell-ready="{ row }">
             <span class="font-mono text-xs">{{ row.ready || '-' }}</span>
           </template>
+          <template #cell-restarts="{ row }">
+            <span class="font-mono text-xs">{{ row.restarts ?? row.details.restartCount ?? 0 }}</span>
+          </template>
+          <template #cell-podIP="{ row }">
+            <span class="font-mono text-xs">{{ row.podIP || row.details.podIP || '-' }}</span>
+          </template>
+          <template #cell-nodeName="{ row }">
+            <div class="min-w-40 space-y-1">
+              <button
+                v-if="isPodResource(row) && nodeDisplayName(row) !== '-'"
+                class="truncate text-xs font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400"
+                type="button"
+                @click="navigateToNodeDetail(row)"
+              >
+                {{ nodeDisplayName(row) }}
+              </button>
+              <p v-else class="truncate text-xs font-medium text-gray-700 dark:text-dark-200">{{ nodeDisplayName(row) }}</p>
+              <div v-if="nodeInternalIP(row) || nodeExternalIP(row)" class="space-y-0.5 font-mono text-[11px] leading-4 text-gray-500 dark:text-dark-400">
+                <p v-if="nodeInternalIP(row)" class="truncate">内网 {{ nodeInternalIP(row) }}</p>
+                <p v-if="nodeExternalIP(row)" class="truncate">外网 {{ nodeExternalIP(row) }}</p>
+              </div>
+            </div>
+          </template>
+          <template #cell-cpu="{ row }">
+            <div class="group relative inline-flex w-28 items-center gap-3">
+              <div class="relative h-2 w-16 shrink-0 rounded-full bg-gray-100 dark:bg-dark-700">
+                <div class="h-full rounded-full transition-all" :class="metricBarClass(metricPercent(row, 'cpu'))" :style="{ width: `${metricPercent(row, 'cpu')}%` }"></div>
+                <span class="absolute top-1/2 h-3.5 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-gray-500/70 dark:bg-dark-300" :style="{ left: `${metricRequestPercent(row, 'cpu')}%` }"></span>
+              </div>
+              <span class="min-w-0 truncate font-mono text-xs text-gray-600 dark:text-dark-300">{{ metricPercentText(row, 'cpu') }}</span>
+              <div class="pointer-events-none absolute left-1/2 top-full z-50 mt-2 hidden w-44 -translate-x-1/2 rounded-lg bg-primary-600 px-3 py-2 text-xs text-white shadow-lg shadow-primary-900/20 group-hover:block">
+                <div v-for="item in metricTooltipRows(row, 'cpu')" :key="item.label" class="grid grid-cols-[64px_1fr] gap-2 font-mono leading-5">
+                  <span>{{ item.label }}:</span>
+                  <span class="text-right font-semibold">{{ item.value }}</span>
+                </div>
+                <span class="absolute left-1/2 top-0 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rotate-45 bg-primary-600"></span>
+              </div>
+            </div>
+          </template>
+          <template #cell-memory="{ row }">
+            <div class="group relative inline-flex w-32 items-center gap-3">
+              <div class="relative h-2 w-16 shrink-0 rounded-full bg-gray-100 dark:bg-dark-700">
+                <div class="h-full rounded-full transition-all" :class="metricBarClass(metricPercent(row, 'memory'))" :style="{ width: `${metricPercent(row, 'memory')}%` }"></div>
+                <span class="absolute top-1/2 h-3.5 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-gray-500/70 dark:bg-dark-300" :style="{ left: `${metricRequestPercent(row, 'memory')}%` }"></span>
+              </div>
+              <span class="min-w-0 truncate font-mono text-xs text-gray-600 dark:text-dark-300">{{ metricPercentText(row, 'memory') }}</span>
+              <div class="pointer-events-none absolute left-1/2 top-full z-50 mt-2 hidden w-44 -translate-x-1/2 rounded-lg bg-primary-600 px-3 py-2 text-xs text-white shadow-lg shadow-primary-900/20 group-hover:block">
+                <div v-for="item in metricTooltipRows(row, 'memory')" :key="item.label" class="grid grid-cols-[64px_1fr] gap-2 font-mono leading-5">
+                  <span>{{ item.label }}:</span>
+                  <span class="text-right font-semibold">{{ item.value }}</span>
+                </div>
+                <span class="absolute left-1/2 top-0 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rotate-45 bg-primary-600"></span>
+              </div>
+            </div>
+          </template>
           <template #cell-labels="{ row }">
-            <div class="flex max-w-md flex-wrap gap-1">
-              <span v-for="label in labelPairs(row.labels).slice(0, 3)" :key="label" class="badge badge-gray">{{ label }}</span>
+            <div class="flex max-w-md flex-nowrap items-center gap-1 overflow-hidden">
+              <span v-for="label in visibleLabelPairs(row)" :key="label" class="badge badge-gray max-w-44 truncate">{{ label }}</span>
+              <span v-if="hiddenLabelCount(row)" class="badge badge-gray shrink-0">+{{ hiddenLabelCount(row) }}</span>
             </div>
           </template>
           <template #cell-actions="{ row }">
             <div class="action-list">
-              <button class="action-item action-item-primary" type="button" @click="selectResource(row)">
+              <button v-if="!isPodResource(row) && !isDeploymentResource(row)" class="action-item action-item-primary" type="button" @click="openResourceDetail(row)">
                 <Icon name="eye" size="sm" />
                 <span>详情</span>
               </button>
-              <button class="action-item action-item-info" type="button" @click="openYaml(row)">
-                <Icon name="document" size="sm" />
-                <span>YAML</span>
-              </button>
-              <button class="action-item action-item-primary" type="button" :disabled="currentDefinition.editDisabled" @click="openEdit(row)">
+              <button v-if="!isPodResource(row) && !isDeploymentResource(row)" class="action-item action-item-primary" type="button" :disabled="currentDefinition.editDisabled" @click="openEdit(row)">
                 <Icon name="edit" size="sm" />
                 <span>编辑</span>
               </button>
@@ -2381,13 +4146,9 @@ onMounted(() => {
                 <Icon name="sync" size="sm" />
                 <span>回滚</span>
               </button>
-              <button v-if="currentDefinition.pod" class="action-item action-item-primary" type="button" @click="openLogs(row, false)">
+              <button v-if="currentDefinition.pod" class="action-item action-item-primary" type="button" @click="openLogs(row, true)">
                 <Icon name="document" size="sm" />
                 <span>日志</span>
-              </button>
-              <button v-if="currentDefinition.pod" class="action-item action-item-success" type="button" @click="openLogs(row, true)">
-                <Icon name="play" size="sm" />
-                <span>实时</span>
               </button>
               <button v-if="currentDefinition.pod" class="action-item action-item-warning" type="button" @click="openTerminal(row)">
                 <Icon name="terminal" size="sm" />
@@ -2428,17 +4189,17 @@ onMounted(() => {
       </div>
     </section>
 
-    <section class="card">
-      <div class="card-header flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+    <BaseDialog :show="detailPanelOpen && Boolean(selectedResource)" :title="resourceDetailTitle" width="extra-wide" @close="closeResourceDetail">
+      <div v-if="selectedResource" class="flex flex-col gap-3 border-b border-gray-100 pb-4 dark:border-dark-700 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <h2 class="text-base font-semibold text-gray-900 dark:text-white">资源详情</h2>
+          <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ `${selectedResource.kind}/${selectedResource.name}` }}</h2>
           <p class="text-sm text-gray-500 dark:text-dark-400">
-            {{ selectedResource ? `${selectedResource.kind}/${selectedResource.name}` : '从列表选择资源查看详情' }}
+            {{ selectedResource.namespace ? `${selectedResource.namespace} · ${selectedResource.status}` : selectedResource.status }}
           </p>
         </div>
-        <div v-if="selectedResource" class="tabs overflow-x-auto">
+        <div class="tabs overflow-x-auto">
           <button
-            v-for="tab in detailTabs"
+            v-for="tab in visibleDetailTabs"
             :key="tab.id"
             type="button"
             class="tab whitespace-nowrap"
@@ -2449,17 +4210,318 @@ onMounted(() => {
           </button>
         </div>
       </div>
-      <div class="card-body">
-        <div v-if="!selectedResource" class="empty-state">
-          <Icon name="inbox" size="xl" class="empty-state-icon" />
-          <p class="empty-state-title">暂无选中资源</p>
-          <p class="empty-state-description">点击列表中的资源名称或详情操作后展示基本信息、状态、关联资源、事件和 YAML。</p>
+      <div v-if="selectedResource" class="pt-4">
+        <div v-if="activeDetailTab === 'overview' && isPodResource(selectedResource)" class="space-y-4">
+          <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+            <div class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+              <p class="text-xs text-gray-500 dark:text-dark-400">状态</p>
+              <div class="mt-2 flex items-center gap-2">
+                <span class="h-2.5 w-2.5 rounded-full" :class="selectedResource.status === 'Running' ? 'bg-emerald-500' : 'bg-amber-500'"></span>
+                <span class="text-lg font-semibold text-gray-900 dark:text-white">{{ selectedResource.status }}</span>
+              </div>
+              <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">{{ detailFieldValue(selectedResource.details.phase) }}</p>
+            </div>
+            <div class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+              <p class="text-xs text-gray-500 dark:text-dark-400">就绪</p>
+              <p class="mt-2 text-lg font-semibold text-gray-900 dark:text-white">{{ selectedResource.ready || '-' }}</p>
+              <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">容器</p>
+            </div>
+            <div class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+              <p class="text-xs text-gray-500 dark:text-dark-400">重启次数</p>
+              <p class="mt-2 text-lg font-semibold text-gray-900 dark:text-white">{{ selectedResource.restarts ?? selectedResource.details.restartCount ?? 0 }}</p>
+              <p v-if="selectedResource.details.lastError" class="mt-1 truncate text-xs text-amber-600 dark:text-amber-300">{{ detailFieldValue(selectedResource.details.lastError) }}</p>
+              <p v-else class="mt-1 text-xs text-gray-500 dark:text-dark-400">所有容器</p>
+            </div>
+            <div class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+              <p class="text-xs text-gray-500 dark:text-dark-400">节点</p>
+              <button class="mt-2 text-left text-sm font-semibold text-primary-600 hover:text-primary-700 dark:text-primary-400" type="button" @click="navigateToNodeDetail(selectedResource)">
+                {{ nodeDisplayName(selectedResource) }}
+              </button>
+              <p class="mt-1 font-mono text-xs text-gray-500 dark:text-dark-400">{{ nodeInternalIP(selectedResource) || '-' }}</p>
+            </div>
+            <div class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+              <p class="text-xs text-gray-500 dark:text-dark-400">Pod IP</p>
+              <p class="mt-2 font-mono text-lg font-semibold text-gray-900 dark:text-white">{{ selectedResource.podIP || selectedResource.details.podIP || '-' }}</p>
+              <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">Pod IP</p>
+            </div>
+            <div class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+              <p class="text-xs text-gray-500 dark:text-dark-400">年龄</p>
+              <p class="mt-2 text-lg font-semibold text-gray-900 dark:text-white">{{ selectedResource.age }}</p>
+              <p class="mt-1 font-mono text-xs text-gray-500 dark:text-dark-400">{{ selectedResource.details.createdAt || '-' }}</p>
+            </div>
+          </div>
+
+          <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <div class="space-y-4">
+              <section class="rounded-xl border border-gray-100 dark:border-dark-700">
+                <div class="border-b border-gray-100 px-4 py-3 dark:border-dark-700">
+                  <h3 class="text-sm font-semibold text-gray-900 dark:text-white">容器（{{ podContainerRows(selectedResource).length }}）</h3>
+                </div>
+                <div class="overflow-x-auto">
+                  <table class="table">
+                    <thead>
+                      <tr>
+                        <th>容器</th>
+                        <th>状态</th>
+                        <th>重启</th>
+                        <th>CPU</th>
+                        <th>内存</th>
+                        <th>端口</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="container in podContainerRows(selectedResource)" :key="container.name">
+                        <td>
+                          <button class="font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400" type="button" @click="openContainerDetail(container.name)">
+                            {{ container.name }}
+                          </button>
+                          <div class="mt-1 max-w-md truncate text-xs text-gray-500 dark:text-dark-400">{{ container.image }}</div>
+                        </td>
+                        <td>
+                          <span class="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-dark-200">
+                            <span class="h-2 w-2 rounded-full" :class="container.status === 'Running' ? 'bg-emerald-500' : 'bg-amber-500'"></span>
+                            {{ container.status }}
+                          </span>
+                        </td>
+                        <td class="font-mono text-xs">{{ container.restarts }}</td>
+                        <td class="font-mono text-xs">{{ container.cpu }}</td>
+                        <td class="font-mono text-xs">{{ container.memory }}</td>
+                        <td class="font-mono text-xs">{{ container.port }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+                <h3 class="mb-4 text-sm font-semibold text-gray-900 dark:text-white">信息</h3>
+                <div class="grid gap-x-8 gap-y-3 md:grid-cols-2">
+                  <div v-for="item in podInfoRows(selectedResource)" :key="item.label" class="grid grid-cols-[96px_minmax(0,1fr)] gap-3 text-sm">
+                    <span class="text-gray-500 dark:text-dark-400">{{ item.label }}</span>
+                    <span class="break-all font-medium text-gray-900 dark:text-white">{{ detailFieldValue(item.value) }}</span>
+                  </div>
+                </div>
+              </section>
+
+              <section class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-white">卷与挂载（{{ podVolumeRows(selectedResource).length }}）</h3>
+                <div class="mt-3 flex flex-wrap gap-2">
+                  <span v-for="volume in podVolumeRows(selectedResource)" :key="volume" class="badge badge-gray">{{ volume }}</span>
+                  <span v-if="!podVolumeRows(selectedResource).length" class="text-sm text-gray-500 dark:text-dark-400">未返回卷信息</span>
+                </div>
+              </section>
+            </div>
+
+            <aside class="space-y-3">
+              <section class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-white">事件（{{ selectedResource.events.length }}）</h3>
+                <div v-if="selectedResource.events.length" class="mt-3 space-y-2">
+                  <div v-for="event in selectedResource.events.slice(0, 3)" :key="event.id" class="rounded-lg bg-gray-50 px-3 py-2 text-xs dark:bg-dark-900/60">
+                    <div class="font-medium text-gray-900 dark:text-white">{{ event.reason }}</div>
+                    <div class="mt-1 text-gray-500 dark:text-dark-400">{{ event.message }}</div>
+                  </div>
+                </div>
+                <p v-else class="mt-3 text-sm text-gray-500 dark:text-dark-400">暂无最近事件</p>
+              </section>
+
+              <section class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-white">关联资源（{{ podRelatedRows(selectedResource).length }}）</h3>
+                <div class="mt-3 divide-y divide-gray-100 dark:divide-dark-700">
+                  <button
+                    v-for="item in podRelatedRows(selectedResource)"
+                    :key="`${item.kind}-${item.name}`"
+                    class="flex w-full items-center justify-between gap-3 py-2 text-left text-sm"
+                    type="button"
+                    @click="navigateToResource(item)"
+                  >
+                    <span class="text-gray-500 dark:text-dark-400">{{ item.kind }}</span>
+                    <span class="truncate font-medium text-primary-600 dark:text-primary-400">{{ item.name }}</span>
+                  </button>
+                  <p v-if="!podRelatedRows(selectedResource).length" class="py-2 text-sm text-gray-500 dark:text-dark-400">暂无关联资源</p>
+                </div>
+              </section>
+
+              <section class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-white">端口（{{ podPortRows(selectedResource).length }}）</h3>
+                <div class="mt-3 flex flex-wrap gap-2">
+                  <span v-for="port in podPortRows(selectedResource)" :key="`${port.number}-${port.protocol}`" class="badge badge-gray font-mono">{{ port.number }} {{ port.protocol }}</span>
+                  <span v-if="!podPortRows(selectedResource).length" class="text-sm text-gray-500 dark:text-dark-400">未暴露端口</span>
+                </div>
+              </section>
+
+              <section class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-white">标签（{{ labelPairs(selectedResource.labels).length }}）</h3>
+                <div class="mt-3 flex flex-wrap gap-2">
+                  <span v-for="label in labelPairs(selectedResource.labels)" :key="label" class="badge badge-gray">{{ label }}</span>
+                </div>
+              </section>
+
+              <section class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-white">注解（{{ Object.keys(selectedResource.annotations).length }}）</h3>
+                <div class="mt-3 space-y-2">
+                  <p v-for="[key, value] in Object.entries(selectedResource.annotations).slice(0, 3)" :key="key" class="break-all rounded-lg bg-gray-50 px-3 py-2 font-mono text-xs text-gray-600 dark:bg-dark-900/60 dark:text-dark-300">
+                    {{ key }}={{ value }}
+                  </p>
+                  <p v-if="!Object.keys(selectedResource.annotations).length" class="text-sm text-gray-500 dark:text-dark-400">暂无注解</p>
+                </div>
+              </section>
+            </aside>
+          </div>
+        </div>
+
+        <div v-else-if="activeDetailTab === 'overview' && isDeploymentResource(selectedResource)" class="space-y-4">
+          <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+            <div class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+              <p class="text-xs text-gray-500 dark:text-dark-400">状态</p>
+              <div class="mt-2 flex items-center gap-2">
+                <span class="h-2.5 w-2.5 rounded-full" :class="selectedResource.status === 'Available' ? 'bg-emerald-500' : 'bg-amber-500'"></span>
+                <span class="text-lg font-semibold text-gray-900 dark:text-white">{{ selectedResource.status }}</span>
+              </div>
+              <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">Deployment</p>
+            </div>
+            <div class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+              <p class="text-xs text-gray-500 dark:text-dark-400">期望副本</p>
+              <p class="mt-2 text-lg font-semibold text-gray-900 dark:text-white">{{ deploymentReplicas(selectedResource).desired }}</p>
+              <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">spec.replicas</p>
+            </div>
+            <div class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+              <p class="text-xs text-gray-500 dark:text-dark-400">已更新</p>
+              <p class="mt-2 text-lg font-semibold text-gray-900 dark:text-white">{{ deploymentReplicas(selectedResource).updated }}</p>
+              <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">updatedReplicas</p>
+            </div>
+            <div class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+              <p class="text-xs text-gray-500 dark:text-dark-400">可用</p>
+              <button class="mt-2 inline-flex items-center gap-2 text-lg font-semibold text-primary-600 hover:text-primary-700 dark:text-primary-400" type="button" @click="navigateToWorkloadPods(selectedResource)">
+                {{ deploymentReplicas(selectedResource).available }}
+                <Icon name="arrowRight" size="sm" />
+              </button>
+              <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">availableReplicas</p>
+            </div>
+            <div class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+              <p class="text-xs text-gray-500 dark:text-dark-400">不可用</p>
+              <p class="mt-2 text-lg font-semibold" :class="deploymentReplicas(selectedResource).unavailable > 0 ? 'text-amber-600 dark:text-amber-300' : 'text-gray-900 dark:text-white'">{{ deploymentReplicas(selectedResource).unavailable }}</p>
+              <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">unavailableReplicas</p>
+            </div>
+            <div class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+              <p class="text-xs text-gray-500 dark:text-dark-400">年龄</p>
+              <p class="mt-2 text-lg font-semibold text-gray-900 dark:text-white">{{ selectedResource.age }}</p>
+              <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">created</p>
+            </div>
+          </div>
+
+          <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <div class="space-y-4">
+              <section class="rounded-xl border border-gray-100 dark:border-dark-700">
+                <div class="border-b border-gray-100 px-4 py-3 dark:border-dark-700">
+                  <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Pod 模板容器（{{ deploymentContainerRows(selectedResource).length }}）</h3>
+                </div>
+                <div class="overflow-x-auto">
+                  <table class="table">
+                    <thead>
+                      <tr>
+                        <th>容器</th>
+                        <th>镜像</th>
+                        <th>拉取策略</th>
+                        <th>端口</th>
+                        <th>CPU req/limit</th>
+                        <th>内存 req/limit</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="container in deploymentContainerRows(selectedResource)" :key="container.name">
+                        <td>
+                          <button class="font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400" type="button" @click="openContainerDetail(container.name)">
+                            {{ container.name }}
+                          </button>
+                        </td>
+                        <td class="max-w-sm break-all font-mono text-xs">{{ container.image }}</td>
+                        <td><span class="badge badge-gray">{{ container.policy }}</span></td>
+                        <td class="font-mono text-xs">{{ container.ports }}</td>
+                        <td class="font-mono text-xs">{{ container.cpu }}</td>
+                        <td class="font-mono text-xs">{{ container.memory }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+                <h3 class="mb-4 text-sm font-semibold text-gray-900 dark:text-white">发布策略与选择器</h3>
+                <div class="grid gap-x-8 gap-y-3 md:grid-cols-2">
+                  <div v-for="item in deploymentInfoRows(selectedResource)" :key="item.label" class="grid gap-1 text-sm sm:grid-cols-[190px_minmax(0,1fr)] sm:gap-4">
+                    <span class="text-gray-500 dark:text-dark-400">{{ item.label }}</span>
+                    <span class="break-all font-medium text-gray-900 dark:text-white">{{ detailFieldValue(item.value) }}</span>
+                  </div>
+                </div>
+              </section>
+
+              <section class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Pod 模板卷（{{ workloadTemplateVolumeRows(selectedResource).length }}）</h3>
+                <div class="mt-3 flex flex-wrap gap-2">
+                  <span v-for="volume in workloadTemplateVolumeRows(selectedResource)" :key="volume" class="badge badge-gray">{{ volume }}</span>
+                  <span v-if="!workloadTemplateVolumeRows(selectedResource).length" class="text-sm text-gray-500 dark:text-dark-400">未配置模板卷</span>
+                </div>
+              </section>
+            </div>
+
+            <aside class="space-y-3">
+              <section class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Conditions（{{ deploymentConditionRows(selectedResource).length }}）</h3>
+                <div v-if="deploymentConditionRows(selectedResource).length" class="mt-3 space-y-2">
+                  <div v-for="condition in deploymentConditionRows(selectedResource)" :key="condition.type" class="rounded-lg bg-gray-50 px-3 py-2 text-xs dark:bg-dark-900/60">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="font-medium text-gray-900 dark:text-white">{{ condition.type }}</span>
+                      <span class="badge" :class="condition.status === 'True' ? 'badge-success' : 'badge-warning'">{{ condition.status }}</span>
+                    </div>
+                    <div class="mt-1 text-gray-500 dark:text-dark-400">{{ condition.reason }}</div>
+                    <div v-if="condition.message" class="mt-1 text-gray-500 dark:text-dark-400">{{ condition.message }}</div>
+                  </div>
+                </div>
+                <p v-else class="mt-3 text-sm text-gray-500 dark:text-dark-400">未返回 Conditions</p>
+              </section>
+
+              <section class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-white">关联资源（{{ deploymentRelatedRows(selectedResource).length }}）</h3>
+                <div class="mt-3 divide-y divide-gray-100 dark:divide-dark-700">
+                  <button
+                    v-for="item in deploymentRelatedRows(selectedResource)"
+                    :key="`${item.kind}-${item.name}`"
+                    class="flex w-full items-center justify-between gap-3 py-2 text-left text-sm"
+                    type="button"
+                    @click="navigateToResource(item)"
+                  >
+                    <span class="text-gray-500 dark:text-dark-400">{{ item.kind }}</span>
+                    <span class="truncate font-medium text-primary-600 dark:text-primary-400">{{ item.name }}</span>
+                  </button>
+                  <p v-if="!deploymentRelatedRows(selectedResource).length" class="py-2 text-sm text-gray-500 dark:text-dark-400">暂无关联资源</p>
+                </div>
+              </section>
+
+              <section class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-white">标签（{{ labelPairs(selectedResource.labels).length }}）</h3>
+                <div class="mt-3 flex flex-wrap gap-2">
+                  <span v-for="label in labelPairs(selectedResource.labels)" :key="label" class="badge badge-gray">{{ label }}</span>
+                  <span v-if="!labelPairs(selectedResource.labels).length" class="text-sm text-gray-500 dark:text-dark-400">暂无标签</span>
+                </div>
+              </section>
+
+              <section class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-white">注解（{{ Object.keys(selectedResource.annotations).length }}）</h3>
+                <div class="mt-3 space-y-2">
+                  <p v-for="[key, value] in Object.entries(selectedResource.annotations).slice(0, 3)" :key="key" class="break-all rounded-lg bg-gray-50 px-3 py-2 font-mono text-xs text-gray-600 dark:bg-dark-900/60 dark:text-dark-300">
+                    {{ key }}={{ value }}
+                  </p>
+                  <p v-if="!Object.keys(selectedResource.annotations).length" class="text-sm text-gray-500 dark:text-dark-400">暂无注解</p>
+                </div>
+              </section>
+            </aside>
+          </div>
         </div>
 
         <div v-else-if="activeDetailTab === 'overview'" class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <div v-for="[key, value] in Object.entries(selectedResource.details)" :key="key" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
-            <p class="text-xs text-gray-500 dark:text-dark-400">{{ key }}</p>
-            <p class="mt-2 break-all text-sm font-medium text-gray-900 dark:text-white">{{ value }}</p>
+            <p class="text-xs text-gray-500 dark:text-dark-400">{{ detailFieldLabel(key) }}</p>
+            <p class="mt-2 break-all text-sm font-medium text-gray-900 dark:text-white">{{ detailFieldValue(value) }}</p>
           </div>
         </div>
 
@@ -2470,9 +4532,43 @@ onMounted(() => {
           </div>
           <div class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
             <p class="text-xs text-gray-500 dark:text-dark-400">就绪</p>
-            <p class="mt-2 text-lg font-semibold text-gray-900 dark:text-white">{{ selectedResource.ready || '-' }}</p>
+            <button
+              v-if="selectedResource.ready && currentDefinition.workload"
+              class="mt-2 inline-flex items-center gap-2 text-lg font-semibold text-primary-600 hover:text-primary-700 dark:text-primary-400"
+              type="button"
+              @click="navigateToWorkloadPods(selectedResource)"
+            >
+              {{ selectedResource.ready }}
+              <Icon name="arrowRight" size="sm" />
+            </button>
+            <p v-else class="mt-2 text-lg font-semibold text-gray-900 dark:text-white">{{ selectedResource.ready || '-' }}</p>
+            <p v-if="selectedResource.ready && currentDefinition.workload" class="mt-1 text-xs text-gray-500 dark:text-dark-400">查看由当前工作负载筛选出的 Pod</p>
           </div>
-          <div class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+          <div v-if="currentDefinition.pod" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+            <p class="text-xs text-gray-500 dark:text-dark-400">重启次数</p>
+            <p class="mt-2 text-lg font-semibold text-gray-900 dark:text-white">{{ selectedResource.restarts ?? selectedResource.details.restartCount ?? 0 }}</p>
+          </div>
+          <div v-if="currentDefinition.pod" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+            <p class="text-xs text-gray-500 dark:text-dark-400">Pod IP</p>
+            <p class="mt-2 font-mono text-sm font-semibold text-gray-900 dark:text-white">{{ selectedResource.podIP || selectedResource.details.podIP || '-' }}</p>
+          </div>
+          <div v-if="currentDefinition.pod" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+            <p class="text-xs text-gray-500 dark:text-dark-400">节点</p>
+            <p class="mt-2 text-sm font-semibold text-gray-900 dark:text-white">{{ selectedResource.nodeName || selectedResource.details.nodeName || '-' }}</p>
+          </div>
+          <div v-if="currentDefinition.pod" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+            <p class="text-xs text-gray-500 dark:text-dark-400">最近错误</p>
+            <p class="mt-2 text-sm font-semibold text-gray-900 dark:text-white">{{ detailFieldValue(selectedResource.details.lastError) }}</p>
+          </div>
+          <div v-if="currentDefinition.pod" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+            <p class="text-xs text-gray-500 dark:text-dark-400">CPU</p>
+            <p class="mt-2 font-mono text-sm font-semibold text-gray-900 dark:text-white">{{ podMetricValue(selectedResource, 'cpuUsage', 'cpuRequest', 'cpuLimit') }}</p>
+          </div>
+          <div v-if="currentDefinition.pod" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+            <p class="text-xs text-gray-500 dark:text-dark-400">内存</p>
+            <p class="mt-2 font-mono text-sm font-semibold text-gray-900 dark:text-white">{{ podMetricValue(selectedResource, 'memoryUsage', 'memoryRequest', 'memoryLimit') }}</p>
+          </div>
+          <div v-if="!currentDefinition.pod" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
             <p class="text-xs text-gray-500 dark:text-dark-400">副本</p>
             <p class="mt-2 text-lg font-semibold text-gray-900 dark:text-white">{{ selectedResource.replicas ?? '-' }} / {{ selectedResource.desiredReplicas ?? '-' }}</p>
           </div>
@@ -2507,13 +4603,183 @@ onMounted(() => {
             </thead>
             <tbody>
               <tr v-for="item in selectedResource.related" :key="`${item.kind}-${item.name}`">
-                <td>{{ item.kind }}</td>
-                <td>{{ item.name }}</td>
+                <td>
+                  <div class="font-medium text-gray-900 dark:text-white">{{ item.kind }}</div>
+                  <div v-if="item.relation" class="text-xs text-gray-400 dark:text-dark-500">{{ item.relation }}</div>
+                </td>
+                <td>
+                  <button
+                    v-if="relatedResourcePath(item)"
+                    class="font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400"
+                    type="button"
+                    @click="navigateToResource(item)"
+                  >
+                    {{ item.name }}
+                  </button>
+                  <span v-else>{{ item.name }}</span>
+                </td>
                 <td>{{ item.namespace || '-' }}</td>
-                <td><span class="badge" :class="statusClass(item.status || 'Ready')">{{ item.status || 'Ready' }}</span></td>
+                <td>
+                  <span class="badge" :class="statusClass(item.status || 'Ready')">{{ item.status || 'Ready' }}</span>
+                  <span v-if="item.ready" class="ml-2 font-mono text-xs text-gray-500 dark:text-dark-400">{{ item.ready }}</span>
+                </td>
+              </tr>
+              <tr v-if="!selectedResource.related.length">
+                <td colspan="4" class="text-center text-sm text-gray-500 dark:text-dark-400">暂无关联资源</td>
               </tr>
             </tbody>
           </table>
+        </div>
+
+        <div v-else-if="activeDetailTab === 'mounts' && isPodResource(selectedResource)" class="space-y-4">
+          <section class="rounded-xl border border-gray-100 dark:border-dark-700">
+            <div class="flex flex-col gap-2 border-b border-gray-100 px-4 py-3 dark:border-dark-700 sm:flex-row sm:items-center sm:justify-between">
+              <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Pod Volumes（{{ podVolumeDetailRows(selectedResource).length }}）</h3>
+              <span class="text-xs text-gray-500 dark:text-dark-400">Pod 级声明，容器通过 volumeMounts 使用</span>
+            </div>
+            <div v-if="podVolumeDetailRows(selectedResource).length" class="overflow-x-auto">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Volume</th>
+                    <th>类型</th>
+                    <th>来源</th>
+                    <th>资源</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="volume in podVolumeDetailRows(selectedResource)" :key="volume.name">
+                    <td class="font-mono text-xs font-semibold">{{ volume.name }}</td>
+                    <td><span class="badge badge-gray">{{ volume.kind }}</span></td>
+                    <td class="break-all text-sm text-gray-700 dark:text-dark-200">{{ volume.summary }}</td>
+                    <td>
+                      <button
+                        v-if="volume.sourceResource"
+                        class="font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400"
+                        type="button"
+                        @click="navigateToResource(volume.sourceResource)"
+                      >
+                        {{ `${volume.sourceResource.kind}/${volume.sourceResource.name}` }}
+                      </button>
+                      <span v-else class="text-sm text-gray-500 dark:text-dark-400">Pod 内部卷</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p v-else class="p-4 text-sm text-gray-500 dark:text-dark-400">未返回 Pod volumes</p>
+          </section>
+
+          <section class="rounded-xl border border-gray-100 dark:border-dark-700">
+            <div class="border-b border-gray-100 px-4 py-3 dark:border-dark-700">
+              <h3 class="text-sm font-semibold text-gray-900 dark:text-white">容器挂载（{{ podContainerMountMatrix(selectedResource).length }}）</h3>
+            </div>
+            <div v-if="podContainerMountMatrix(selectedResource).length" class="divide-y divide-gray-100 dark:divide-dark-700">
+              <div v-for="container in podContainerMountMatrix(selectedResource)" :key="container.name" class="p-4">
+                <div class="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <button class="font-semibold text-primary-600 hover:text-primary-700 dark:text-primary-400" type="button" @click="openContainerDetail(container.name)">
+                    {{ container.name }}
+                  </button>
+                  <span class="text-xs text-gray-500 dark:text-dark-400">{{ container.mounts.length }} 个挂载</span>
+                </div>
+                <div v-if="container.mounts.length" class="overflow-x-auto rounded-xl border border-gray-100 dark:border-dark-700">
+                  <table class="table">
+                    <thead>
+                      <tr>
+                        <th>Volume</th>
+                        <th>挂载路径</th>
+                        <th>来源</th>
+                        <th>权限</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="mount in container.mounts" :key="`${container.name}-${mount.name}-${mount.mountPath}`">
+                        <td>
+                          <div class="font-mono text-xs font-semibold text-gray-900 dark:text-white">{{ mount.name }}</div>
+                          <div class="mt-1 text-xs text-gray-500 dark:text-dark-400">{{ mount.sourceKind }}</div>
+                        </td>
+                        <td>
+                          <p class="break-all font-mono text-xs text-gray-900 dark:text-white">{{ mount.mountPath }}</p>
+                          <p v-if="mount.subPath" class="mt-1 break-all font-mono text-xs text-gray-500 dark:text-dark-400">subPath: {{ mount.subPath }}</p>
+                        </td>
+                        <td>
+                          <button
+                            v-if="mount.sourceResource"
+                            class="font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400"
+                            type="button"
+                            @click="navigateToResource(mount.sourceResource)"
+                          >
+                            {{ `${mount.sourceResource.kind}/${mount.sourceResource.name}` }}
+                          </button>
+                          <span v-else class="break-all text-sm text-gray-700 dark:text-dark-200">{{ mount.source }}</span>
+                        </td>
+                        <td><span class="badge badge-gray">{{ mount.readOnly ? 'RO' : 'RW' }}</span></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p v-else class="text-sm text-gray-500 dark:text-dark-400">当前容器未配置 volumeMounts</p>
+              </div>
+            </div>
+            <p v-else class="p-4 text-sm text-gray-500 dark:text-dark-400">未返回容器挂载信息</p>
+          </section>
+        </div>
+
+        <div v-else-if="activeDetailTab === 'monitoring' && (isPodResource(selectedResource) || isDeploymentResource(selectedResource))" class="space-y-4">
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <select v-model="activeMonitoringRange" class="input sm:w-48">
+              <option v-for="option in monitoringRangeOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+            <select v-model="activeMonitoringStep" class="input sm:w-48">
+              <option v-for="option in monitoringStepOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+            <select v-model="activeMonitoringTarget" class="input sm:w-56">
+              <option v-for="option in monitoringTargetOptions(selectedResource)" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+            <span class="text-xs text-gray-500 dark:text-dark-400 sm:ml-auto">
+              {{ monitoringSampleSummary() }}
+            </span>
+          </div>
+
+          <div
+            v-if="!monitoringHasUsage(selectedResource)"
+            class="rounded-3xl border border-amber-200 bg-amber-50 p-6 text-sm leading-6 text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-300"
+          >
+            <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+              <div class="max-w-3xl">
+                <h3 class="text-base font-semibold text-amber-900 dark:text-amber-200">{{ monitoringUnavailableTitle(selectedResource) }}</h3>
+                <p class="mt-2">{{ metricsUnavailableMessage }}</p>
+                <p class="mt-2 text-xs text-amber-700 dark:text-amber-300">
+                  Kubernetes Metrics Server 提供的是 CPU / Memory 这类资源指标；Pod / Container 级网络 I/O、磁盘 I/O 通常需要 Prometheus 抓取 kubelet/cAdvisor 或等价容器指标采集链路。Node 级网络、磁盘、文件系统指标可由 node_exporter 提供。
+                </p>
+              </div>
+              <div class="rounded-2xl border border-amber-200 bg-white/70 px-4 py-3 font-mono text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-100">
+                <p>kubectl get apiservice v1beta1.metrics.k8s.io</p>
+                <p class="mt-1">kubectl top pod -n {{ selectedResource.namespace || 'default' }}</p>
+              </div>
+            </div>
+          </div>
+
+          <div v-else class="grid gap-4 lg:grid-cols-2">
+            <KubeMonitoringChart
+              v-for="chart in monitoringChartCards(selectedResource)"
+              :key="`${monitoringChartKey}-${chart.kind}`"
+              :title="chart.title"
+              :labels="chart.labels"
+              :datasets="chart.datasets"
+              :right-axis="chart.rightAxis"
+              :active-index="activeMonitoringIndex"
+              :y-tick-formatter="(value: number) => monitoringTickLabel(value, chart.kind)"
+              :tooltip-formatter="(value: number, label: string, unit?: string) => monitoringTooltipLabel(value, label, unit, chart.kind)"
+              @hover-index="activeMonitoringIndex = $event"
+            />
+          </div>
         </div>
 
         <div v-else-if="activeDetailTab === 'events'" class="table-container">
@@ -2537,11 +4803,134 @@ onMounted(() => {
           </table>
         </div>
 
-        <div v-else>
-          <pre class="code-block max-h-[460px] whitespace-pre-wrap">{{ selectedResource.yaml }}</pre>
+        <div v-else class="space-y-3">
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <span class="input-label mb-0">YAML</span>
+            <div class="flex flex-wrap items-center gap-2 sm:ml-auto">
+              <div class="inline-flex w-fit items-center gap-1 rounded-xl border border-gray-200 bg-gray-100 p-1 dark:border-dark-700 dark:bg-dark-900">
+                <span class="px-1.5 text-xs font-medium text-gray-500 dark:text-dark-400">字号</span>
+                <button
+                  v-for="size in [12, 13, 14, 16]"
+                  :key="size"
+                  type="button"
+                  class="rounded-lg px-2 py-1 text-xs font-semibold transition-all"
+                  :class="segmentButtonClass(yamlFontSize === size)"
+                  @click="yamlFontSize = size"
+                >
+                  {{ size }}
+                </button>
+              </div>
+              <button class="btn btn-primary btn-sm" type="button" @click="saveDetailYaml">保存 YAML</button>
+            </div>
+          </div>
+          <textarea
+            :value="detailYamlDraft"
+            class="input min-h-[460px] font-mono leading-6"
+            :style="{ fontSize: `${yamlFontSize}px` }"
+            spellcheck="false"
+            @input="onDetailYamlInput"
+          ></textarea>
+          <p v-if="detailYamlError" class="text-sm text-red-600 dark:text-red-300">{{ detailYamlError }}</p>
         </div>
       </div>
-    </section>
+      <template #footer>
+        <button class="btn btn-secondary" type="button" @click="closeResourceDetail">关闭</button>
+      </template>
+    </BaseDialog>
+
+    <BaseDialog :show="containerDetailOpen && Boolean(selectedContainerRow())" :title="containerDetailTitle" width="wide" :z-index="60" @close="closeContainerDetail">
+      <div v-if="selectedContainerRow()" class="space-y-4">
+        <div class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p class="text-lg font-semibold text-gray-900 dark:text-white">{{ selectedContainerRow()?.name }}</p>
+              <p class="mt-1 max-w-3xl break-all font-mono text-xs text-gray-500 dark:text-dark-400">{{ selectedContainerRow()?.image }}</p>
+            </div>
+            <span class="badge" :class="isTemplateContainerDetail ? 'badge-primary' : statusClass(selectedContainerRow()?.status || 'Running')">{{ selectedContainerRow()?.status }}</span>
+          </div>
+        </div>
+
+        <div class="tabs w-full overflow-x-auto">
+          <button
+            v-for="tab in containerDetailTabs"
+            :key="tab.id"
+            type="button"
+            class="tab flex-1 whitespace-nowrap text-center"
+            :class="{ 'tab-active': activeContainerDetailTab === tab.id }"
+            @click="activeContainerDetailTab = tab.id"
+          >
+            {{ tab.label }}
+          </button>
+        </div>
+
+        <div v-if="activeContainerDetailTab === 'details'" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+          <div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <span class="badge badge-primary">{{ selectedContainerRow()?.name }}</span>
+            <span class="badge" :class="isTemplateContainerDetail ? 'badge-primary' : selectedContainerRow()?.status === 'Running' ? 'badge-success' : 'badge-warning'">{{ isTemplateContainerDetail ? 'Pod Template' : selectedContainerStatusObject()?.ready === false ? 'Not Ready' : 'Ready' }}</span>
+          </div>
+          <div class="grid gap-x-8 gap-y-5 md:grid-cols-2">
+            <div v-for="item in selectedContainerDetailRows()" :key="item.label" class="min-w-0">
+              <p class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-dark-400">{{ item.label }}</p>
+              <p class="mt-2 break-all font-mono text-sm font-medium text-gray-900 dark:text-white">{{ detailFieldValue(item.value) }}</p>
+            </div>
+            <div class="min-w-0">
+              <p class="text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">Requests</p>
+              <p v-for="line in containerResourceRows(selectedContainerYamlObject() ?? {}).requests" :key="line" class="mt-1 font-mono text-sm text-gray-900 dark:text-white">{{ line }}</p>
+            </div>
+            <div class="min-w-0">
+              <p class="text-xs font-semibold uppercase tracking-wide text-red-600 dark:text-red-400">Limits</p>
+              <p v-for="line in containerResourceRows(selectedContainerYamlObject() ?? {}).limits" :key="line" class="mt-1 font-mono text-sm text-gray-900 dark:text-white">{{ line }}</p>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="activeContainerDetailTab === 'env'" class="rounded-xl border border-gray-100 dark:border-dark-700">
+          <div class="border-b border-gray-100 px-4 py-3 dark:border-dark-700">
+            <h3 class="text-sm font-semibold text-gray-900 dark:text-white">环境变量（{{ selectedContainerEnvRows().length }}）</h3>
+          </div>
+          <div v-if="selectedContainerEnvRows().length" class="overflow-x-auto">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>名称</th>
+                  <th>来源</th>
+                  <th>值</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="env in selectedContainerEnvRows()" :key="env.name">
+                  <td class="font-mono text-xs">{{ env.name }}</td>
+                  <td><span class="badge badge-gray">{{ env.source }}</span></td>
+                  <td class="break-all font-mono text-xs">{{ env.value }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p v-else class="p-4 text-sm text-gray-500 dark:text-dark-400">未配置环境变量</p>
+        </div>
+
+        <div v-else class="rounded-xl border border-gray-100 dark:border-dark-700">
+          <div class="border-b border-gray-100 px-4 py-3 dark:border-dark-700">
+            <h3 class="text-sm font-semibold text-gray-900 dark:text-white">卷挂载（{{ selectedContainerMountRows().length }}）</h3>
+          </div>
+          <div v-if="selectedContainerMountRows().length" class="divide-y divide-gray-100 dark:divide-dark-700">
+            <div v-for="mount in selectedContainerMountRows()" :key="`${mount.name}-${mount.mountPath}`" class="grid gap-3 px-4 py-3 text-sm md:grid-cols-[180px_minmax(0,1fr)_80px] md:items-center">
+              <span class="badge badge-gray w-fit font-mono">{{ mount.name }}</span>
+              <div class="min-w-0">
+                <p class="break-all font-mono font-medium text-gray-900 dark:text-white">{{ mount.mountPath }}</p>
+                <p class="mt-1 break-all text-xs text-gray-500 dark:text-dark-400">{{ mount.source }}</p>
+                <p v-if="mount.subPath" class="mt-1 break-all font-mono text-xs text-gray-500 dark:text-dark-400">subPath: {{ mount.subPath }}</p>
+              </div>
+              <span class="justify-self-start text-xs font-semibold text-gray-500 dark:text-dark-400 md:justify-self-end">{{ mount.readOnly ? 'RO' : 'RW' }}</span>
+            </div>
+          </div>
+          <p v-else class="p-4 text-sm text-gray-500 dark:text-dark-400">未配置卷挂载</p>
+        </div>
+      </div>
+      <template #footer>
+        <button class="btn btn-secondary" type="button" @click="closeContainerDetail">关闭</button>
+      </template>
+    </BaseDialog>
 
     <BaseDialog :show="editDialogOpen" :title="editMode === 'create' ? `创建 ${createDefinition.title}` : `编辑 ${currentDefinition.title}`" :width="createDialogWidth" @close="closeEditDialog">
       <form class="space-y-4" @submit.prevent="submitForm">
@@ -2588,6 +4977,31 @@ onMounted(() => {
                   YAML 编辑
                 </button>
               </div>
+            </div>
+          </div>
+
+          <div v-if="yamlDocumentSummaries.length" class="space-y-2 rounded-xl border border-blue-100 bg-blue-50/70 p-3 dark:border-blue-900/40 dark:bg-blue-950/20">
+            <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p class="text-sm font-semibold text-blue-900 dark:text-blue-200">多资源 YAML</p>
+                <p class="text-xs leading-5 text-blue-700 dark:text-blue-300">表单正在编辑选中的资源；切换资源后，表单会同步对应 YAML 文档，提交时仍会保留完整多文档 YAML。</p>
+              </div>
+              <span class="w-fit rounded-full border border-blue-200 bg-white px-3 py-1 text-xs font-medium text-blue-700 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">
+                共 {{ yamlDocumentSummaries.length }} 个资源
+              </span>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-for="item in yamlDocumentSummaries"
+                :key="item.index"
+                type="button"
+                class="rounded-lg border px-3 py-2 text-left text-xs font-semibold transition"
+                :class="activeYamlDocumentIndex === item.index ? 'border-primary-500 bg-primary-600 text-white shadow-sm shadow-primary-600/20' : 'border-blue-200 bg-white text-blue-800 hover:border-primary-300 hover:text-primary-700 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200'"
+                :title="item.description"
+                @click="setActiveYamlDocument(item.index)"
+              >
+                {{ item.label }}
+              </button>
             </div>
           </div>
 
@@ -2760,16 +5174,16 @@ onMounted(() => {
                   @click="toggleSection(sectionKey(section.title))"
                 >
                   <span class="min-w-0">
-                    <span class="block text-sm font-semibold text-gray-900 dark:text-white">{{ section.title }}</span>
+                    <span class="block text-sm font-semibold text-gray-900 dark:text-white">{{ ['Pod 模板', 'Pod 配置'].includes(section.title) ? createPodSpecTitle : section.title }}</span>
                     <span v-if="section.description" class="block text-xs text-gray-500 dark:text-dark-400">{{ section.description }}</span>
                   </span>
                   <Icon :name="isSectionCollapsed(sectionKey(section.title)) ? 'chevronDown' : 'chevronUp'" size="sm" class="mt-1 shrink-0 text-gray-400" />
                 </button>
 
                 <div v-if="!isSectionCollapsed(sectionKey(section.title))" class="space-y-4">
-                  <div v-if="section.title === 'Pod 模板'" class="space-y-4">
+                  <div v-if="['Pod 模板', 'Pod 配置'].includes(section.title)" class="space-y-4">
                     <div class="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-3 text-xs leading-5 text-gray-500 dark:border-dark-700 dark:bg-dark-900/40 dark:text-dark-400">
-                      Pod 模板统一纳管普通容器与 Init 容器。普通容器配置基础信息、端口、环境变量、资源、安全、探针、生命周期和容器挂载；Init 容器支持 command / args、env、resources 和 volumeMounts，但不配置 readiness、liveness、startup probe 或 lifecycle。Pod 安全、存储卷和调度在下方以 Pod 级配置统一生效。
+                      {{ createPodSpecDescription }} 普通容器配置基础信息、端口、环境变量、资源、安全、探针、生命周期和容器挂载；Init 容器支持 command / args、env、resources 和 volumeMounts，但不配置 readiness、liveness、startup probe 或 lifecycle。Pod 安全、存储卷和调度在下方以 Pod 级配置统一生效。
                     </div>
                     <div class="inline-flex w-full rounded-xl border border-gray-200 bg-gray-100 p-1 dark:border-dark-700 dark:bg-dark-900 sm:w-fit">
                       <button
@@ -2788,9 +5202,9 @@ onMounted(() => {
                     </p>
                   </div>
 
-                  <template v-if="section.title !== 'Pod 模板'">
+                  <template v-if="!['Pod 模板', 'Pod 配置'].includes(section.title)">
                   <div v-for="field in section.fields" :key="field.key" class="space-y-2">
-                    <template v-if="section.title !== '基本信息' || field.key === 'name' || field.key === 'namespace'">
+                    <template v-if="section.title !== '基本信息' || createDefinition.type === 'pods' || field.key === 'name' || field.key === 'namespace'">
                     <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
                       <span class="input-label">
                         {{ field.label }}
@@ -3119,7 +5533,7 @@ onMounted(() => {
                                   <input v-model="mount.subPath" class="input" placeholder="可选" @focus="markFormSource" />
                                 </label>
                                 <label class="flex min-h-[42px] items-center gap-2 rounded-xl border border-gray-200 px-4 py-2.5 text-sm text-gray-700 dark:border-dark-600 dark:text-dark-300">
-                                  <input v-model="mount.readOnly" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" @focus="markFormSource" />
+                                  <input :checked="mount.readOnly" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" @change="updateVolumeMountReadOnly(mount, $event)" />
                                   只读挂载
                                 </label>
                                 <div class="flex items-end gap-2">
@@ -3389,7 +5803,7 @@ onMounted(() => {
                                   <input v-model="mount.subPath" class="input" placeholder="可选" @focus="markFormSource" />
                                 </label>
                                 <label class="flex min-h-[42px] items-center gap-2 rounded-xl border border-gray-200 px-4 py-2.5 text-sm text-gray-700 dark:border-dark-600 dark:text-dark-300">
-                                  <input v-model="mount.readOnly" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" @focus="markFormSource" />
+                                  <input :checked="mount.readOnly" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" @change="updateVolumeMountReadOnly(mount, $event)" />
                                   只读挂载
                                 </label>
                                 <div class="flex items-end">
@@ -3567,7 +5981,7 @@ onMounted(() => {
                           <input v-model="mount.subPath" class="input" placeholder="可选" @focus="markFormSource" />
                         </label>
                         <label class="flex min-h-[42px] items-center gap-2 rounded-xl border border-gray-200 px-4 py-2.5 text-sm text-gray-700 dark:border-dark-600 dark:text-dark-300">
-                          <input v-model="mount.readOnly" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" @focus="markFormSource" />
+                          <input :checked="mount.readOnly" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" @change="updateVolumeMountReadOnly(mount, $event)" />
                           只读挂载
                         </label>
                         <div class="flex items-end">
@@ -3660,7 +6074,7 @@ onMounted(() => {
                 </div>
               </section>
 
-              <section v-if="createDefinition.type === 'deployments'" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+              <section v-if="usesPodSpecCreateForm" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
                 <div class="mb-4 space-y-3">
                   <button type="button" class="flex w-full items-start justify-between gap-3 text-left" @click="toggleSection('pod-security')">
                     <span class="min-w-0">
@@ -3797,7 +6211,7 @@ onMounted(() => {
                 </div>
               </section>
 
-              <section v-if="createDefinition.type === 'deployments'" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+              <section v-if="usesPodSpecCreateForm" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
                 <div class="mb-4 space-y-3">
                   <button type="button" class="flex w-full items-start justify-between gap-3 text-left" @click="toggleSection('pod-network')">
                     <span class="min-w-0">
@@ -3868,12 +6282,12 @@ onMounted(() => {
                 </div>
               </section>
 
-              <section v-if="createDefinition.type === 'deployments'" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+              <section v-if="usesPodSpecCreateForm" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
                 <div class="mb-4 space-y-3">
                   <button type="button" class="flex w-full items-start justify-between gap-3 text-left" @click="toggleSection('pod-storage')">
                     <span class="min-w-0">
                       <span class="block text-sm font-semibold text-gray-900 dark:text-white">Pod 存储卷</span>
-                      <span class="block text-xs leading-5 text-gray-500 dark:text-dark-400">只定义 Pod 模板 volumes；挂载路径在普通容器 / Init 容器的“挂载”页签中配置。</span>
+                      <span class="block text-xs leading-5 text-gray-500 dark:text-dark-400">只定义 {{ createDefinition.type === 'pods' ? 'Pod' : 'Pod 模板' }} volumes；挂载路径在普通容器 / Init 容器的“挂载”页签中配置。</span>
                     </span>
                     <Icon :name="isSectionCollapsed('pod-storage') ? 'chevronDown' : 'chevronUp'" size="sm" class="mt-1 shrink-0 text-gray-400" />
                   </button>
@@ -3949,7 +6363,7 @@ onMounted(() => {
                 </div>
               </section>
 
-              <section v-if="createDefinition.type === 'deployments'" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+              <section v-if="usesPodSpecCreateForm" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
                 <div class="mb-4 space-y-3">
                   <button type="button" class="flex w-full items-start justify-between gap-3 text-left" @click="toggleSection('pod-scheduling')">
                     <span class="min-w-0">
@@ -4031,7 +6445,7 @@ onMounted(() => {
                 </div>
               </section>
 
-              <section v-if="createDefinition.type === 'deployments'" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
+              <section v-if="usesPodSpecCreateForm" class="rounded-xl border border-gray-100 p-4 dark:border-dark-700">
                 <div class="mb-4 space-y-3">
                   <button type="button" class="flex w-full items-start justify-between gap-3 text-left" @click="toggleSection('node-scheduling')">
                     <span class="min-w-0">
@@ -4231,10 +6645,31 @@ onMounted(() => {
             <span class="input-label">Namespace</span>
             <input v-model="formState.namespace" class="input" placeholder="default" />
           </label>
-          <label class="block">
-            <span class="input-label">YAML</span>
-            <textarea :value="formState.yaml" class="input min-h-80 font-mono text-xs" spellcheck="false" @input="onRawYamlInput"></textarea>
-          </label>
+          <div class="space-y-2">
+            <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <span class="input-label mb-0">YAML</span>
+              <div class="inline-flex w-fit items-center gap-1 rounded-xl border border-gray-200 bg-gray-100 p-1 dark:border-dark-700 dark:bg-dark-900 sm:ml-auto">
+                <span class="px-1.5 text-xs font-medium text-gray-500 dark:text-dark-400">字号</span>
+                <button
+                  v-for="size in [12, 13, 14, 16]"
+                  :key="size"
+                  type="button"
+                  class="rounded-lg px-2 py-1 text-xs font-semibold transition-all"
+                  :class="segmentButtonClass(yamlFontSize === size)"
+                  @click="yamlFontSize = size"
+                >
+                  {{ size }}
+                </button>
+              </div>
+            </div>
+            <textarea
+              :value="formState.yaml"
+              class="input min-h-80 font-mono leading-6"
+              :style="{ fontSize: `${yamlFontSize}px` }"
+              spellcheck="false"
+              @input="onRawYamlInput"
+            ></textarea>
+          </div>
           <p v-if="yamlParseError" class="text-sm text-red-600 dark:text-red-300">{{ yamlParseError }}</p>
         </div>
 
@@ -4254,7 +6689,7 @@ onMounted(() => {
     >
       <form class="space-y-4" @submit.prevent="submitRelatedForm">
         <div class="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-700 dark:border-blue-900/40 dark:bg-blue-950/30 dark:text-blue-300">
-          在当前 Deployment 表单上叠加创建 {{ relatedDefinition.title }}；取消会回到原表单，创建成功后会自动选中到{{ relatedFillTargetText }}。
+          在当前 {{ createDefinition.title }} 表单上叠加创建 {{ relatedDefinition.title }}；取消会回到原表单，创建成功后会自动选中到{{ relatedFillTargetText }}。
         </div>
 
         <div class="flex flex-col gap-3 rounded-xl border border-gray-200 p-3 dark:border-dark-700 sm:flex-row sm:items-center sm:justify-between">
@@ -4364,18 +6799,7 @@ onMounted(() => {
       </form>
     </BaseDialog>
 
-    <BaseDialog :show="yamlDialogOpen" title="查看与应用 YAML" width="wide" @close="yamlDialogOpen = false">
-      <textarea v-model="yamlDraft" class="input min-h-[460px] font-mono text-xs" spellcheck="false"></textarea>
-      <template #footer>
-        <button class="btn btn-secondary" type="button" @click="yamlDialogOpen = false">关闭</button>
-        <button class="btn btn-danger" type="button" @click="openApplyYaml">
-          <Icon name="upload" size="sm" />
-          应用 YAML
-        </button>
-      </template>
-    </BaseDialog>
-
-    <BaseDialog :show="actionDialogOpen" title="工作负载操作" width="normal" @close="actionDialogOpen = false">
+    <BaseDialog :show="actionDialogOpen" :title="workloadActionDialogTitle" width="normal" @close="actionDialogOpen = false">
       <div class="space-y-4">
         <label v-if="actionForm.action === 'scale'" class="block">
           <span class="input-label">目标副本数</span>
@@ -4389,11 +6813,11 @@ onMounted(() => {
           <span class="input-label">回滚目标</span>
           <input v-model="actionForm.rollbackRevision" class="input" placeholder="previous 或 revision id" />
         </label>
-        <p class="text-sm text-gray-500 dark:text-dark-400">提交前会进入二次确认，并调用高风险操作接口携带 confirm=true。</p>
+        <p class="text-sm leading-6 text-gray-600 dark:text-dark-300">{{ workloadActionConfirmText }}</p>
       </div>
       <template #footer>
         <button class="btn btn-secondary" type="button" @click="actionDialogOpen = false">取消</button>
-        <button class="btn btn-danger" type="button" @click="confirmWorkloadAction">继续确认</button>
+        <button class="btn btn-danger" type="button" @click="confirmWorkloadAction">确认执行</button>
       </template>
     </BaseDialog>
 
@@ -4406,14 +6830,40 @@ onMounted(() => {
     </BaseDialog>
 
     <BaseDialog :show="logsDialogOpen" title="Pod 日志" width="wide" @close="logsDialogOpen = false">
-      <pre class="code-block max-h-[560px] whitespace-pre-wrap">{{ logsText }}</pre>
+      <pre class="console-block max-h-[560px] whitespace-pre-wrap">{{ logsText }}</pre>
     </BaseDialog>
 
     <BaseDialog :show="terminalDialogOpen" title="Pod 终端" width="wide" @close="terminalDialogOpen = false">
-      <div class="rounded-xl bg-gray-950 p-4 font-mono text-sm text-emerald-300">
-        <p>$ kubectl exec -it {{ selectedResource?.name }} -- /bin/sh</p>
-        <p class="mt-3 text-gray-400">终端 WebSocket 将由后端 API-017 接入。当前确认已提交并记录审计。</p>
+      <div class="space-y-4">
+        <div class="grid gap-3 md:grid-cols-2">
+          <label class="block">
+            <span class="input-label">容器</span>
+            <select v-model="terminalContainerName" class="input">
+              <option v-for="option in podTerminalContainerOptions(selectedResource)" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+          </label>
+          <label class="block">
+            <span class="input-label">进入命令</span>
+            <select v-model="terminalCommandPreset" class="input">
+              <option v-for="option in terminalCommandOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+          </label>
+        </div>
+        <label v-if="terminalCommandPreset === 'custom'" class="block">
+          <span class="input-label">自定义命令</span>
+          <input v-model="terminalCustomCommand" class="input font-mono" placeholder="/bin/sh" />
+        </label>
+        <pre class="console-block whitespace-pre-wrap">$ kubectl exec -it {{ selectedResource?.name }} -n {{ selectedResource?.namespace || 'default' }} -c {{ terminalContainerName || '-' }} -- {{ terminalCommand }}</pre>
+        <p v-if="terminalSessionMessage" class="text-sm text-gray-600 dark:text-dark-300">{{ terminalSessionMessage }}</p>
       </div>
+      <template #footer>
+        <button class="btn btn-secondary" type="button" @click="terminalDialogOpen = false">关闭</button>
+        <button class="btn btn-primary" type="button" :disabled="!terminalContainerName" @click="connectTerminal">连接终端</button>
+      </template>
     </BaseDialog>
 
     <BaseDialog :show="secretDialogOpen" title="Secret 明文" width="normal" @close="closeSecretDialog">

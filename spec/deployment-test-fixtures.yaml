@@ -1,0 +1,308 @@
+# Deployment create-form test fixtures
+#
+# 用法：
+# 1. 可整份复制到创建弹窗的 YAML 编辑模式，一次提交多个 Deployment。
+# 2. 粘贴后用顶部“多资源 YAML”切换条选择任一资源，切回“表单创建”检查字段是否能回填。
+# 3. 修改表单后观察右侧 YAML 是否只更新当前选中的资源，其他资源保持不变。
+# 4. 提交后列表应出现 4 个 Deployment，并可进入详情页查看提交时的 YAML。
+# 5. 特别关注 volumeMounts.readOnly：未声明 readOnly 的挂载，表单应显示未勾选。
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-minimal
+  namespace: default
+  labels:
+    app: web-minimal
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-minimal
+  template:
+    metadata:
+      labels:
+        app: web-minimal
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.27
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-with-mounts
+  namespace: default
+  labels:
+    app: web-with-mounts
+    tier: frontend
+  annotations:
+    owner: platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-with-mounts
+  template:
+    metadata:
+      labels:
+        app: web-with-mounts
+        tier: frontend
+    spec:
+      volumes:
+        - name: app-config
+          configMap:
+            name: app-config
+        - name: app-secret
+          secret:
+            secretName: app-secret
+        - name: data
+          persistentVolumeClaim:
+            claimName: data-pvc
+        - name: cache
+          emptyDir: {}
+      containers:
+        - name: app
+          image: nginx:1.27
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          volumeMounts:
+            - name: app-config
+              mountPath: /etc/config
+              readOnly: true
+            - name: app-secret
+              mountPath: /etc/secret
+            - name: data
+              mountPath: /var/lib/app
+            - name: cache
+              mountPath: /tmp/cache
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: private-api-secure
+  namespace: prod
+  labels:
+    app: private-api-secure
+    tier: api
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 1
+  minReadySeconds: 5
+  revisionHistoryLimit: 5
+  progressDeadlineSeconds: 300
+  selector:
+    matchLabels:
+      app: private-api-secure
+  template:
+    metadata:
+      labels:
+        app: private-api-secure
+        tier: api
+    spec:
+      serviceAccountName: workload-sa
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: registry-credential
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 2000
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: registry.example.com/platform/private-api:v1.2.3
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: APP_ENV
+              value: production
+            - name: LOG_LEVEL
+              value: info
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 1
+            failureThreshold: 3
+            successThreshold: 1
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 1
+            failureThreshold: 3
+            successThreshold: 1
+          startupProbe:
+            httpGet:
+              path: /startup
+              port: 8080
+            initialDelaySeconds: 0
+            periodSeconds: 5
+            timeoutSeconds: 1
+            failureThreshold: 30
+            successThreshold: 1
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - sleep 5
+          securityContext:
+            runAsUser: 1001
+            runAsGroup: 1001
+            runAsNonRoot: true
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-init-scheduled
+  namespace: jobs
+  labels:
+    app: worker-init-scheduled
+    workload: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker-init-scheduled
+  template:
+    metadata:
+      labels:
+        app: worker-init-scheduled
+        workload: worker
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      dnsConfig:
+        nameservers:
+          - 10.96.0.10
+        searches:
+          - svc.cluster.local
+          - cluster.local
+        options:
+          - name: ndots
+            value: "2"
+      nodeSelector:
+        kubernetes.io/os: linux
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nodepool
+                    operator: In
+                    values:
+                      - apps
+                      - general
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - legacy-worker
+              topologyKey: kubernetes.io/hostname
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: apps
+          effect: NoExecute
+          tolerationSeconds: 60
+      volumes:
+        - name: workdir
+          emptyDir: {}
+        - name: worker-secret
+          secret:
+            secretName: worker-secret
+      initContainers:
+        - name: init-permissions
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - mkdir -p /work && echo init > /work/status
+          env:
+            - name: INIT_MODE
+              value: prepare
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: workdir
+              mountPath: /work
+          securityContext:
+            runAsUser: 1002
+            runAsGroup: 1002
+            runAsNonRoot: true
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+      containers:
+        - name: worker
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - while true; do cat /work/status; sleep 30; done
+          env:
+            - name: QUEUE_NAME
+              value: default
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+          volumeMounts:
+            - name: workdir
+              mountPath: /work
+            - name: worker-secret
+              mountPath: /etc/worker-secret
+              readOnly: true

@@ -1,3 +1,4 @@
+import { parseAllDocuments, stringify } from 'yaml'
 import type {
   AuditLogEntry,
   ClusterCredentialFormContract,
@@ -493,8 +494,115 @@ export const kubeResourceSummaries: ResourceSummary[] = [
     ready: '2/2',
     restarts: 1,
     podIP: '10.42.1.18',
+    cpuUsage: '220m',
+    memoryUsage: '410Mi',
+    cpuRequest: '150m',
+    cpuLimit: '500m',
+    memoryRequest: '256Mi',
+    memoryLimit: '512Mi',
     images: ['ghcr.io/example/api-server:v1.0.0'],
-    details: { cpu: '220m', memory: '410Mi', owner: 'Deployment/api-server' },
+    labels: { app: 'api-server', 'pod-template-hash': '7db6f89f8c' },
+    details: {
+      phase: 'Running',
+      ready: '2/2',
+      restartCount: 1,
+      podIP: '10.42.1.18',
+      hostIP: '172.18.0.11',
+      nodeInternalIP: '172.18.0.11',
+      nodeExternalIP: '203.0.113.11',
+      nodeName: 'worker-01',
+      owner: 'Deployment/api-server',
+      containers: 'app, sidecar',
+      images: 'ghcr.io/example/api-server:v1.0.0',
+      cpuUsage: '220m',
+      memoryUsage: '410Mi',
+      cpuRequest: '150m',
+      cpuLimit: '500m',
+      memoryRequest: '256Mi',
+      memoryLimit: '512Mi',
+      containerPorts: '8080/TCP',
+      serviceAccountName: 'api-server',
+      qosClass: 'Burstable',
+      conditions: 'Ready=True, ContainersReady=True, PodScheduled=True',
+      volumes: 'config, credentials, logs, kube-api-access'
+    },
+    ownerReferences: [{ kind: 'ReplicaSet', name: 'api-server-7db6f89f8c', resourceType: 'replicasets' }],
+    actions: podActions
+  }),
+  resource('pods', 'api-server-7db6f89f8c-p2m6n', 'platform', 'Running', '2/2', 'worker-02', {
+    ready: '2/2',
+    restarts: 0,
+    podIP: '10.42.2.19',
+    cpuUsage: '190m',
+    memoryUsage: '384Mi',
+    cpuRequest: '150m',
+    cpuLimit: '500m',
+    memoryRequest: '256Mi',
+    memoryLimit: '512Mi',
+    images: ['ghcr.io/example/api-server:v1.0.0'],
+    labels: { app: 'api-server', 'pod-template-hash': '7db6f89f8c' },
+    details: {
+      phase: 'Running',
+      ready: '2/2',
+      restartCount: 0,
+      podIP: '10.42.2.19',
+      hostIP: '172.18.0.12',
+      nodeInternalIP: '172.18.0.12',
+      nodeName: 'worker-02',
+      owner: 'Deployment/api-server',
+      containers: 'app, sidecar',
+      images: 'ghcr.io/example/api-server:v1.0.0',
+      cpuUsage: '190m',
+      memoryUsage: '384Mi',
+      cpuRequest: '150m',
+      cpuLimit: '500m',
+      memoryRequest: '256Mi',
+      memoryLimit: '512Mi',
+      containerPorts: '8080/TCP',
+      serviceAccountName: 'api-server',
+      qosClass: 'Burstable',
+      conditions: 'Ready=True, ContainersReady=True, PodScheduled=True',
+      volumes: 'config, credentials, logs, tmp-cache, kube-api-access'
+    },
+    ownerReferences: [{ kind: 'ReplicaSet', name: 'api-server-7db6f89f8c', resourceType: 'replicasets' }],
+    actions: podActions
+  }),
+  resource('pods', 'api-server-7db6f89f8c-x9q2c', 'platform', 'Running', '2/2', 'worker-03', {
+    ready: '2/2',
+    restarts: 0,
+    podIP: '10.42.3.20',
+    cpuUsage: '205m',
+    memoryUsage: '396Mi',
+    cpuRequest: '150m',
+    cpuLimit: '500m',
+    memoryRequest: '256Mi',
+    memoryLimit: '512Mi',
+    images: ['ghcr.io/example/api-server:v1.0.0'],
+    labels: { app: 'api-server', 'pod-template-hash': '7db6f89f8c' },
+    details: {
+      phase: 'Running',
+      ready: '2/2',
+      restartCount: 0,
+      podIP: '10.42.3.20',
+      hostIP: '172.18.0.13',
+      nodeInternalIP: '172.18.0.13',
+      nodeExternalIP: '203.0.113.13',
+      nodeName: 'worker-03',
+      owner: 'Deployment/api-server',
+      containers: 'app, sidecar',
+      images: 'ghcr.io/example/api-server:v1.0.0',
+      cpuUsage: '205m',
+      memoryUsage: '396Mi',
+      cpuRequest: '150m',
+      cpuLimit: '500m',
+      memoryRequest: '256Mi',
+      memoryLimit: '512Mi',
+      containerPorts: '8080/TCP',
+      serviceAccountName: 'api-server',
+      qosClass: 'Burstable',
+      conditions: 'Ready=True, ContainersReady=True, PodScheduled=True',
+      volumes: 'config, logs'
+    },
     ownerReferences: [{ kind: 'ReplicaSet', name: 'api-server-7db6f89f8c', resourceType: 'replicasets' }],
     actions: podActions
   }),
@@ -502,8 +610,76 @@ export const kubeResourceSummaries: ResourceSummary[] = [
     ready: '1/1',
     restarts: 0,
     podIP: '10.42.2.33',
+    cpuUsage: '80m',
+    memoryUsage: '180Mi',
+    cpuRequest: '50m',
+    cpuLimit: '250m',
+    memoryRequest: '128Mi',
+    memoryLimit: '256Mi',
     images: ['ghcr.io/example/web-console:v1.0.0'],
-    details: { cpu: '80m', memory: '180Mi', owner: 'Deployment/web-console' },
+    labels: { app: 'web-console', 'pod-template-hash': '56fcd7d7c8' },
+    details: {
+      phase: 'Running',
+      ready: '1/1',
+      restartCount: 0,
+      podIP: '10.42.2.33',
+      hostIP: '172.18.0.12',
+      nodeInternalIP: '172.18.0.12',
+      nodeName: 'worker-02',
+      owner: 'Deployment/web-console',
+      containers: 'app',
+      images: 'ghcr.io/example/web-console:v1.0.0',
+      cpuUsage: '80m',
+      memoryUsage: '180Mi',
+      cpuRequest: '50m',
+      cpuLimit: '250m',
+      memoryRequest: '128Mi',
+      memoryLimit: '256Mi',
+      containerPorts: '8080/TCP',
+      serviceAccountName: 'web-console',
+      qosClass: 'Burstable',
+      conditions: 'Ready=True, ContainersReady=True, PodScheduled=True',
+      volumes: 'web-config'
+    },
+    ownerReferences: [{ kind: 'ReplicaSet', name: 'web-console-56fcd7d7c8', resourceType: 'replicasets' }],
+    actions: podActions
+  }),
+  resource('pods', 'web-console-56fcd7d7c8-nv2sq', 'platform', 'Running', '1/1', 'worker-03', {
+    ready: '1/1',
+    restarts: 0,
+    podIP: '10.42.3.34',
+    cpuUsage: '76m',
+    memoryUsage: '172Mi',
+    cpuRequest: '50m',
+    cpuLimit: '250m',
+    memoryRequest: '128Mi',
+    memoryLimit: '256Mi',
+    images: ['ghcr.io/example/web-console:v1.0.0'],
+    labels: { app: 'web-console', 'pod-template-hash': '56fcd7d7c8' },
+    details: {
+      phase: 'Running',
+      ready: '1/1',
+      restartCount: 0,
+      podIP: '10.42.3.34',
+      hostIP: '172.18.0.13',
+      nodeInternalIP: '172.18.0.13',
+      nodeExternalIP: '203.0.113.13',
+      nodeName: 'worker-03',
+      owner: 'Deployment/web-console',
+      containers: 'app',
+      images: 'ghcr.io/example/web-console:v1.0.0',
+      cpuUsage: '76m',
+      memoryUsage: '172Mi',
+      cpuRequest: '50m',
+      cpuLimit: '250m',
+      memoryRequest: '128Mi',
+      memoryLimit: '256Mi',
+      containerPorts: '8080/TCP',
+      serviceAccountName: 'web-console',
+      qosClass: 'Burstable',
+      conditions: 'Ready=True, ContainersReady=True, PodScheduled=True',
+      volumes: 'web-config'
+    },
     ownerReferences: [{ kind: 'ReplicaSet', name: 'web-console-56fcd7d7c8', resourceType: 'replicasets' }],
     actions: podActions
   }),
@@ -511,21 +687,86 @@ export const kubeResourceSummaries: ResourceSummary[] = [
     ready: '0/1',
     restarts: 8,
     podIP: '10.42.2.41',
+    cpuRequest: '100m',
+    cpuLimit: '300m',
+    memoryRequest: '128Mi',
+    memoryLimit: '256Mi',
     images: ['ghcr.io/example/payment-worker:v0.9.2'],
-    details: { cpu: '30m', memory: '96Mi', owner: 'StatefulSet/payment-worker' },
+    details: {
+      phase: 'Running',
+      ready: '0/1',
+      restartCount: 8,
+      podIP: '10.42.2.41',
+      hostIP: '172.18.0.12',
+      nodeInternalIP: '172.18.0.12',
+      nodeName: 'worker-02',
+      owner: 'StatefulSet/payment-worker',
+      containers: 'payment-worker',
+      images: 'ghcr.io/example/payment-worker:v0.9.2',
+      cpuRequest: '100m',
+      cpuLimit: '300m',
+      memoryRequest: '128Mi',
+      memoryLimit: '256Mi',
+      serviceAccountName: 'payment-worker',
+      qosClass: 'Burstable',
+      conditions: 'Ready=False, ContainersReady=False, PodScheduled=True',
+      lastError: 'Back-off restarting failed container payment-worker',
+      volumes: 'workdir'
+    },
     ownerReferences: [{ kind: 'StatefulSet', name: 'payment-worker', resourceType: 'statefulsets' }],
     actions: podActions
   }),
   resource('deployments', 'api-server', 'platform', 'Available', '3/3', undefined, {
     ready: '3/3',
     images: ['ghcr.io/example/api-server:v1.0.0'],
-    details: { replicas: 3, strategy: 'RollingUpdate', selector: 'app=api-server' },
+    labels: { app: 'api-server' },
+    details: {
+      replicas: 3,
+      desiredReplicas: 3,
+      updatedReplicas: 3,
+      availableReplicas: 3,
+      unavailableReplicas: 0,
+      observedGeneration: 12,
+      strategy: 'RollingUpdate',
+      maxSurge: '25%',
+      maxUnavailable: '25%',
+      minReadySeconds: 10,
+      revisionHistoryLimit: 10,
+      progressDeadlineSeconds: 600,
+      paused: false,
+      selector: 'app=api-server',
+      conditions: 'Available=True(MinimumReplicasAvailable), Progressing=True(NewReplicaSetAvailable)',
+      containers: 'app, sidecar',
+      containerPorts: 'http:8080/TCP, metrics:9090/TCP',
+      serviceAccountName: 'api-server',
+      imagePullSecrets: 'registry-credential',
+      volumes: 'config（ConfigMap/api-server-config）, credentials（Secret/api-server-secret）, logs（emptyDir）'
+    },
     actions: workloadActions
   }),
   resource('deployments', 'web-console', 'platform', 'Available', '2/2', undefined, {
     ready: '2/2',
     images: ['ghcr.io/example/web-console:v1.0.0'],
-    details: { replicas: 2, strategy: 'RollingUpdate', selector: 'app=web-console' },
+    labels: { app: 'web-console' },
+    details: {
+      replicas: 2,
+      desiredReplicas: 2,
+      updatedReplicas: 2,
+      availableReplicas: 2,
+      unavailableReplicas: 0,
+      observedGeneration: 7,
+      strategy: 'Recreate',
+      minReadySeconds: 0,
+      revisionHistoryLimit: 5,
+      progressDeadlineSeconds: 300,
+      paused: false,
+      selector: 'app=web-console',
+      conditions: 'Available=True(MinimumReplicasAvailable), Progressing=True(NewReplicaSetAvailable)',
+      containers: 'app',
+      containerPorts: 'http:80/TCP',
+      serviceAccountName: 'web-console',
+      volumes: 'web-config（ConfigMap/web-console-config）'
+    },
     actions: workloadActions
   }),
   resource('statefulsets', 'payment-worker', 'payments', 'Degraded', '0/1', undefined, {
@@ -543,8 +784,17 @@ export const kubeResourceSummaries: ResourceSummary[] = [
   resource('replicasets', 'api-server-7db6f89f8c', 'platform', 'Available', '3/3', undefined, {
     ready: '3/3',
     images: ['ghcr.io/example/api-server:v1.0.0'],
+    labels: { app: 'api-server', 'pod-template-hash': '7db6f89f8c' },
     ownerReferences: [{ kind: 'Deployment', name: 'api-server', resourceType: 'deployments' }],
     details: { replicas: 3, selector: 'app=api-server,pod-template-hash=7db6f89f8c' },
+    actions: disableActions(workloadActions, ['setImage', 'rollback'], 'ReplicaSet 回滚以关联 Deployment 为准')
+  }),
+  resource('replicasets', 'web-console-56fcd7d7c8', 'platform', 'Available', '2/2', undefined, {
+    ready: '2/2',
+    images: ['ghcr.io/example/web-console:v1.0.0'],
+    labels: { app: 'web-console', 'pod-template-hash': '56fcd7d7c8' },
+    ownerReferences: [{ kind: 'Deployment', name: 'web-console', resourceType: 'deployments' }],
+    details: { replicas: 2, selector: 'app=web-console,pod-template-hash=56fcd7d7c8' },
     actions: disableActions(workloadActions, ['setImage', 'rollback'], 'ReplicaSet 回滚以关联 Deployment 为准')
   }),
   resource('jobs', 'db-migration-20260527', 'platform', 'Complete', '1/1', undefined, {
@@ -557,10 +807,12 @@ export const kubeResourceSummaries: ResourceSummary[] = [
     actions: disableActions(workloadActions, ['scale', 'restart', 'setImage', 'rolloutStatus', 'rollback'], 'CronJob 通过调度配置触发 Job')
   }),
   resource('services', 'api-server', 'platform', 'Active', 'ClusterIP', undefined, {
+    labels: { app: 'api-server' },
     details: { type: 'ClusterIP', clusterIP: '10.96.12.11', ports: '8080/TCP' },
     actions: namespacedActions
   }),
   resource('services', 'web-console', 'platform', 'Active', 'ClusterIP', undefined, {
+    labels: { app: 'web-console' },
     details: { type: 'ClusterIP', clusterIP: '10.96.18.24', ports: '80/TCP' },
     actions: namespacedActions
   }),
@@ -569,10 +821,12 @@ export const kubeResourceSummaries: ResourceSummary[] = [
     actions: namespacedActions
   }),
   resource('endpoints', 'api-server', 'platform', 'Ready', '3 addresses', undefined, {
+    labels: { app: 'api-server' },
     details: { subsets: 1, addresses: '10.42.1.18,10.42.2.19,10.42.3.20' },
     actions: namespacedActions
   }),
   resource('endpoint-slices', 'api-server-m8fxp', 'platform', 'Ready', '3 endpoints', undefined, {
+    labels: { app: 'api-server' },
     details: { addressType: 'IPv4', ports: '8080', endpoints: 3 },
     actions: namespacedActions
   }),
@@ -654,6 +908,8 @@ export const kubeResourceSummaries: ResourceSummary[] = [
     actions: eventActions
   })
 ]
+
+const mockResourceYamlById = new Map<string, string>()
 
 export const kubeEvents: KubeEvent[] = [
   {
@@ -962,16 +1218,308 @@ export function getMockResourceDetail(query: { resourceType: string; name: strin
         event.involvedObject.namespace === summary.namespace ||
         summary.ownerReferences.some((owner) => owner.name === event.involvedObject.name)
     ),
-    yaml: renderMockYaml(summary),
+    yaml: mockResourceYamlById.get(summary.id) ?? renderMockYaml(summary),
     actionAvailability: summary.actions
   }
+}
+
+function yamlObjectMetadata(object: Record<string, unknown>) {
+  return object.metadata && typeof object.metadata === 'object' && !Array.isArray(object.metadata)
+    ? object.metadata as Record<string, unknown>
+    : {}
+}
+
+function labelsFromYaml(object: Record<string, unknown>, name: string) {
+  const labels = yamlObjectMetadata(object).labels
+  if (!labels || typeof labels !== 'object' || Array.isArray(labels)) {
+    return { app: name, 'app.kubernetes.io/managed-by': 'kube-subops' }
+  }
+  return Object.fromEntries(Object.entries(labels).map(([key, value]) => [key, String(value)]))
+}
+
+function annotationsFromYaml(object: Record<string, unknown>) {
+  const annotations = yamlObjectMetadata(object).annotations
+  if (!annotations || typeof annotations !== 'object' || Array.isArray(annotations)) return {}
+  return Object.fromEntries(Object.entries(annotations).map(([key, value]) => [key, String(value)]))
+}
+
+function readPath(value: unknown, path: Array<string | number>) {
+  return path.reduce<unknown>((current, key) => {
+    if (current === null || current === undefined) return undefined
+    if (typeof key === 'number') return Array.isArray(current) ? current[key] : undefined
+    if (typeof current === 'object' && key in current) return (current as Record<string, unknown>)[key]
+    return undefined
+  }, value)
+}
+
+function imagesFromYaml(object: Record<string, unknown>) {
+  const containers = String(object.kind ?? '') === 'Pod'
+    ? readPath(object, ['spec', 'containers'])
+    : readPath(object, ['spec', 'template', 'spec', 'containers'])
+  if (!Array.isArray(containers)) return undefined
+  const images = containers
+    .map((container) => typeof container === 'object' && container ? String((container as Record<string, unknown>).image ?? '') : '')
+    .filter(Boolean)
+  return images.length ? images : undefined
+}
+
+function csvFromRecord(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return ''
+  return Object.entries(value as Record<string, unknown>).map(([key, item]) => `${key}=${item}`).join(',')
+}
+
+type PodResourceMetrics = {
+  cpuRequest: string
+  memoryRequest: string
+  cpuLimit: string
+  memoryLimit: string
+  cpuUsage: string
+  memoryUsage: string
+}
+
+function readPodResourceMetrics(containers: Record<string, unknown>[], containerStatuses: Record<string, unknown>[]): PodResourceMetrics {
+  const metrics: PodResourceMetrics = {
+    cpuRequest: '',
+    memoryRequest: '',
+    cpuLimit: '',
+    memoryLimit: '',
+    cpuUsage: '',
+    memoryUsage: ''
+  }
+
+  containers.forEach((container) => {
+    const resources = container.resources && typeof container.resources === 'object' ? container.resources as Record<string, unknown> : {}
+    const requestMap = resources.requests && typeof resources.requests === 'object' ? resources.requests as Record<string, unknown> : {}
+    const limitMap = resources.limits && typeof resources.limits === 'object' ? resources.limits as Record<string, unknown> : {}
+    if (!metrics.cpuRequest && requestMap.cpu !== undefined) metrics.cpuRequest = String(requestMap.cpu)
+    if (!metrics.memoryRequest && requestMap.memory !== undefined) metrics.memoryRequest = String(requestMap.memory)
+    if (!metrics.cpuLimit && limitMap.cpu !== undefined) metrics.cpuLimit = String(limitMap.cpu)
+    if (!metrics.memoryLimit && limitMap.memory !== undefined) metrics.memoryLimit = String(limitMap.memory)
+  })
+
+  containerStatuses.forEach((containerStatus) => {
+    const usageMap = containerStatus.usage && typeof containerStatus.usage === 'object' ? containerStatus.usage as Record<string, unknown> : {}
+    if (!metrics.cpuUsage && usageMap.cpu !== undefined) metrics.cpuUsage = String(usageMap.cpu)
+    if (!metrics.memoryUsage && usageMap.memory !== undefined) metrics.memoryUsage = String(usageMap.memory)
+  })
+
+  return metrics
+}
+
+function podDetailsFromYaml(object: Record<string, unknown>) {
+  const spec = readPath(object, ['spec'])
+  const status = readPath(object, ['status'])
+  const podSpec = spec && typeof spec === 'object' && !Array.isArray(spec) ? spec as Record<string, unknown> : {}
+  const podStatus = status && typeof status === 'object' && !Array.isArray(status) ? status as Record<string, unknown> : {}
+  const containers = Array.isArray(podSpec.containers) ? podSpec.containers.map((item) => item as Record<string, unknown>) : []
+  const initContainers = Array.isArray(podSpec.initContainers) ? podSpec.initContainers.map((item) => item as Record<string, unknown>) : []
+  const containerStatuses = Array.isArray(podStatus.containerStatuses) ? podStatus.containerStatuses.map((item) => item as Record<string, unknown>) : []
+  const restartCount = containerStatuses.reduce((sum, item) => sum + Number(item.restartCount ?? 0), 0)
+  const ports = containers.flatMap((container) =>
+    (Array.isArray(container.ports) ? container.ports : []).map((port) => {
+      const item = port as Record<string, unknown>
+      const name = item.name ? `${item.name}:` : ''
+      const protocol = String(item.protocol ?? 'TCP')
+      return `${name}${item.containerPort}/${protocol}`
+    })
+  )
+  const conditions = (Array.isArray(podStatus.conditions) ? podStatus.conditions : []).map((condition) => {
+    const item = condition as Record<string, unknown>
+    return `${item.type}=${item.status}${item.reason ? `(${item.reason})` : ''}`
+  })
+  const volumes = (Array.isArray(podSpec.volumes) ? podSpec.volumes : [])
+    .map((volume) => String((volume as Record<string, unknown>).name ?? ''))
+    .filter(Boolean)
+  const imagePullSecrets = (Array.isArray(podSpec.imagePullSecrets) ? podSpec.imagePullSecrets : [])
+    .map((secret) => String((secret as Record<string, unknown>).name ?? ''))
+    .filter(Boolean)
+  const ownerReferences = readPath(object, ['metadata', 'ownerReferences'])
+  const firstOwner = Array.isArray(ownerReferences) ? ownerReferences[0] as Record<string, unknown> | undefined : undefined
+  const waiting = containerStatuses
+    .map((container) => {
+      const state = container.state && typeof container.state === 'object' ? container.state as Record<string, unknown> : {}
+      const waitingState = state.waiting && typeof state.waiting === 'object' ? state.waiting as Record<string, unknown> : {}
+      return waitingState.reason || waitingState.message ? `${container.name}: ${waitingState.reason ?? waitingState.message}` : ''
+    })
+    .find(Boolean)
+  const readyCount = containerStatuses.filter((container) => container.ready === true).length
+  const desiredCount = containers.length
+  const resourceMetrics = readPodResourceMetrics(containers, containerStatuses)
+  const details: ResourceSummary['details'] = {}
+  if (podStatus.phase !== undefined) details.phase = String(podStatus.phase)
+  if (desiredCount) details.ready = `${readyCount}/${desiredCount}`
+  if (restartCount) details.restartCount = restartCount
+  if (podStatus.podIP !== undefined) details.podIP = String(podStatus.podIP)
+  if (podStatus.hostIP !== undefined) details.hostIP = String(podStatus.hostIP)
+  if (podSpec.nodeName !== undefined) details.nodeName = String(podSpec.nodeName)
+  if (firstOwner?.kind && firstOwner.name) details.owner = `${firstOwner.kind}/${firstOwner.name}`
+  if (containers.length) details.containers = containers.map((container) => String(container.name ?? '')).filter(Boolean).join(', ')
+  if (initContainers.length) details.initContainers = initContainers.map((container) => String(container.name ?? '')).filter(Boolean).join(', ')
+  const images = imagesFromYaml(object)
+  if (images?.length) details.images = images.join(', ')
+  if (resourceMetrics.cpuUsage) details.cpuUsage = resourceMetrics.cpuUsage
+  if (resourceMetrics.memoryUsage) details.memoryUsage = resourceMetrics.memoryUsage
+  if (resourceMetrics.cpuRequest) details.cpuRequest = resourceMetrics.cpuRequest
+  if (resourceMetrics.cpuLimit) details.cpuLimit = resourceMetrics.cpuLimit
+  if (resourceMetrics.memoryRequest) details.memoryRequest = resourceMetrics.memoryRequest
+  if (resourceMetrics.memoryLimit) details.memoryLimit = resourceMetrics.memoryLimit
+  if (ports.length) details.containerPorts = ports.join(', ')
+  if (podSpec.serviceAccountName !== undefined) details.serviceAccountName = String(podSpec.serviceAccountName)
+  if (podStatus.qosClass !== undefined) details.qosClass = String(podStatus.qosClass)
+  if (conditions.length) details.conditions = conditions.join(', ')
+  if (volumes.length) details.volumes = volumes.join(', ')
+  if (podSpec.dnsPolicy !== undefined) details.dnsPolicy = String(podSpec.dnsPolicy)
+  if (podSpec.hostNetwork !== undefined) details.hostNetwork = Boolean(podSpec.hostNetwork)
+  const nodeSelector = csvFromRecord(podSpec.nodeSelector)
+  if (nodeSelector) details.nodeSelector = nodeSelector
+  if (imagePullSecrets.length) details.imagePullSecrets = imagePullSecrets.join(', ')
+  if (waiting) details.lastError = waiting
+  return details
+}
+
+function detailsFromYaml(object: Record<string, unknown>) {
+  if (String(object.kind ?? '') === 'Pod') return podDetailsFromYaml(object)
+  const replicas = readPath(object, ['spec', 'replicas'])
+  const strategy = readPath(object, ['spec', 'strategy', 'type'])
+  const maxSurge = readPath(object, ['spec', 'strategy', 'rollingUpdate', 'maxSurge'])
+  const maxUnavailable = readPath(object, ['spec', 'strategy', 'rollingUpdate', 'maxUnavailable'])
+  const minReadySeconds = readPath(object, ['spec', 'minReadySeconds'])
+  const revisionHistoryLimit = readPath(object, ['spec', 'revisionHistoryLimit'])
+  const progressDeadlineSeconds = readPath(object, ['spec', 'progressDeadlineSeconds'])
+  const paused = readPath(object, ['spec', 'paused'])
+  const selectorLabels = readPath(object, ['spec', 'selector', 'matchLabels'])
+  const details: ResourceSummary['details'] = {}
+  if (replicas !== undefined) details.replicas = Number(replicas)
+  if (strategy !== undefined) details.strategy = String(strategy)
+  if (maxSurge !== undefined) details.maxSurge = String(maxSurge)
+  if (maxUnavailable !== undefined) details.maxUnavailable = String(maxUnavailable)
+  if (strategy !== undefined && strategy !== 'RollingUpdate' && (maxSurge !== undefined || maxUnavailable !== undefined)) {
+    details.rollingUpdateNote = `${strategy} 不使用 rollingUpdate 参数`
+  }
+  if (minReadySeconds !== undefined) details.minReadySeconds = Number(minReadySeconds)
+  if (revisionHistoryLimit !== undefined) details.revisionHistoryLimit = Number(revisionHistoryLimit)
+  if (progressDeadlineSeconds !== undefined) details.progressDeadlineSeconds = Number(progressDeadlineSeconds)
+  if (paused !== undefined) details.paused = Boolean(paused)
+  if (selectorLabels && typeof selectorLabels === 'object' && !Array.isArray(selectorLabels)) {
+    details.selector = Object.entries(selectorLabels as Record<string, unknown>).map(([key, value]) => `${key}=${value}`).join(',')
+  }
+  return details
+}
+
+function podReadyFromYaml(object: Record<string, unknown>) {
+  const containers = readPath(object, ['spec', 'containers'])
+  const containerStatuses = readPath(object, ['status', 'containerStatuses'])
+  const desiredCount = Array.isArray(containers) ? containers.length : 0
+  if (!desiredCount) return '0/0'
+  if (!Array.isArray(containerStatuses)) return `${desiredCount}/${desiredCount}`
+  const readyCount = containerStatuses.filter((status) => typeof status === 'object' && status && (status as Record<string, unknown>).ready === true).length
+  return `${readyCount}/${desiredCount}`
+}
+
+function scalarDetailString(value: string | number | boolean | string[] | undefined) {
+  if (typeof value === 'string' || typeof value === 'number') return String(value)
+  return ''
+}
+
+export function createMockResourcesFromYaml(payload: Record<string, unknown>) {
+  const yaml = String(payload.yaml ?? '')
+  const resourceType = String(payload.resourceType ?? '')
+  const clusterId = String(payload.clusterId ?? defaultClusterId)
+  const fallbackNamespace = String(payload.namespace ?? defaultNamespace)
+  const documents = parseAllDocuments(yaml)
+  const errors = documents.flatMap((document) => document.errors)
+  if (errors.length) throw new Error(errors[0]?.message || 'YAML 解析失败。')
+
+  const objects = documents
+    .map((document) => document.toJSON())
+    .filter((object): object is Record<string, unknown> => Boolean(object) && typeof object === 'object' && !Array.isArray(object))
+
+  objects.forEach((object) => {
+    const metadata = yamlObjectMetadata(object)
+    const name = String(metadata.name ?? '').trim()
+    if (!name) return
+    const definition = getMockResourceDefinition(resourceType)
+    const namespace = definition?.namespaced ? String(metadata.namespace ?? fallbackNamespace).trim() || fallbackNamespace : undefined
+    const replicas = Number(readPath(object, ['spec', 'replicas']) ?? 1)
+    const kind = String(object.kind ?? definition?.kind ?? resourceType)
+    const ready = kind === 'Deployment' ? `${replicas}/${replicas}` : kind === 'Pod' ? podReadyFromYaml(object) : 'Ready'
+    const status = kind === 'Deployment'
+      ? 'Available'
+      : kind === 'Pod'
+        ? String(readPath(object, ['status', 'phase']) ?? 'Running')
+        : 'Active'
+    const details = detailsFromYaml(object)
+    const renderedYaml = stringify(object, { indent: 2, lineWidth: 120, singleQuote: false }).trimEnd()
+    const summary = resource(resourceType, name, namespace, status, ready, undefined, {
+      clusterId,
+      kind,
+      apiVersion: String(object.apiVersion ?? definition?.apiVersion ?? 'v1'),
+      labels: labelsFromYaml(object, name),
+      annotations: annotationsFromYaml(object),
+      ready,
+      restarts: kind === 'Pod' ? Number(details.restartCount ?? 0) : undefined,
+      podIP: kind === 'Pod' ? String(readPath(object, ['status', 'podIP']) ?? '') || undefined : undefined,
+      nodeName: kind === 'Pod' ? String(readPath(object, ['spec', 'nodeName']) ?? '') || undefined : undefined,
+      cpuUsage: kind === 'Pod' ? scalarDetailString(details.cpuUsage) || undefined : undefined,
+      memoryUsage: kind === 'Pod' ? scalarDetailString(details.memoryUsage) || undefined : undefined,
+      cpuRequest: kind === 'Pod' ? scalarDetailString(details.cpuRequest) || undefined : undefined,
+      cpuLimit: kind === 'Pod' ? scalarDetailString(details.cpuLimit) || undefined : undefined,
+      memoryRequest: kind === 'Pod' ? scalarDetailString(details.memoryRequest) || undefined : undefined,
+      memoryLimit: kind === 'Pod' ? scalarDetailString(details.memoryLimit) || undefined : undefined,
+      images: imagesFromYaml(object),
+      details,
+      actions: kind === 'Pod' ? podActions : readOnlyActions
+    })
+    const summaryWithYaml = summary as ResourceSummary & { yaml?: string }
+    summaryWithYaml.yaml = renderedYaml
+    const index = kubeResourceSummaries.findIndex((item) => item.id === summary.id && item.clusterId === summary.clusterId)
+    if (index >= 0) {
+      kubeResourceSummaries.splice(index, 1, summary)
+    } else {
+      kubeResourceSummaries.unshift(summary)
+    }
+    mockResourceYamlById.set(summary.id, renderedYaml)
+  })
+
+  return objects.length
+}
+
+export function deleteMockResources(payload: {
+  clusterId?: string
+  resourceType?: string
+  namespace?: string
+  name?: string
+  resources?: Array<{ clusterId?: string; resourceType?: string; namespace?: string; name?: string }>
+}) {
+  const targets = payload.resources?.length
+    ? payload.resources
+    : [{ clusterId: payload.clusterId, resourceType: payload.resourceType, namespace: payload.namespace, name: payload.name }]
+  let deleted = 0
+
+  targets.forEach((target) => {
+    const index = kubeResourceSummaries.findIndex((item) =>
+      item.clusterId === target.clusterId &&
+      item.resourceType === target.resourceType &&
+      item.name === target.name &&
+      (target.namespace === undefined || item.namespace === target.namespace)
+    )
+    if (index >= 0) {
+      const [removed] = kubeResourceSummaries.splice(index, 1)
+      mockResourceYamlById.delete(removed.id)
+      deleted += 1
+    }
+  })
+
+  return deleted
 }
 
 export function listMockResourceSummaries(query: ResourceListQuery): PageResult<ResourceSummary> {
   const definition = getMockResourceDefinition(query.resourceType)
   const normalizedNamespace = query.namespace && query.namespace !== allNamespacesValue ? query.namespace : ''
   const keyword = (query.name ?? '').trim().toLowerCase()
-  const status = (query.status ?? '').trim().toLowerCase()
+  const nodeName = query.nodeName && query.nodeName !== 'all-nodes' ? query.nodeName.trim() : ''
+  const rawStatus = (query.status ?? '').trim().toLowerCase()
+  const status = rawStatus === 'all' ? '' : rawStatus
   const labelPairs = parseLabelSelector(query.labels)
   const page = Math.max(1, query.page ?? 1)
   const pageSize = Math.max(1, query.pageSize ?? 20)
@@ -980,6 +1528,7 @@ export function listMockResourceSummaries(query: ResourceListQuery): PageResult<
     .filter((item) => item.clusterId === query.clusterId)
     .filter((item) => item.resourceType === query.resourceType)
     .filter((item) => !definition?.namespaced || !normalizedNamespace || item.namespace === normalizedNamespace)
+    .filter((item) => !nodeName || item.nodeName === nodeName || item.details.nodeName === nodeName)
     .filter((item) => !keyword || item.name.toLowerCase().includes(keyword))
     .filter((item) => !status || item.status.toLowerCase().includes(status) || item.statusText.toLowerCase().includes(status))
     .filter((item) => labelPairs.every(([key, value]) => item.labels[key] === value))
@@ -1097,10 +1646,10 @@ function resource(
 
   return {
     id: [resourceType, namespace, name].filter(Boolean).join('/'),
-    clusterId: defaultClusterId,
+    clusterId: overrides.clusterId ?? defaultClusterId,
     resourceType,
-    kind,
-    apiVersion: definition?.apiVersion ?? 'v1',
+    kind: overrides.kind ?? kind,
+    apiVersion: overrides.apiVersion ?? definition?.apiVersion ?? 'v1',
     name,
     namespace,
     status,
@@ -1109,13 +1658,13 @@ function resource(
     age: resourceType === 'namespaces' ? readyOrAge : '3d',
     createdAt: '2026-05-24T10:00:00+08:00',
     labels,
-    annotations: {
+    annotations: overrides.annotations ?? {
       'kubectl.kubernetes.io/last-applied-configuration': 'hidden in summary'
     },
     ownerReferences: overrides.ownerReferences ?? [],
     ready: overrides.ready ?? (readyOrAge.includes('/') ? readyOrAge : undefined),
     restarts: overrides.restarts,
-    nodeName,
+    nodeName: overrides.nodeName ?? nodeName,
     podIP: overrides.podIP,
     images: overrides.images,
     capacity: overrides.capacity,
@@ -1245,6 +1794,238 @@ function renderMockYaml(summary: ResourceSummary) {
   const labels = Object.entries(summary.labels)
     .map(([key, value]) => `    ${key}: ${value}`)
     .join('\n')
+  if (summary.kind === 'Pod') {
+    const image = summary.images?.[0] ?? 'nginx:1.27'
+    const serviceAccount = typeof summary.details.serviceAccountName === 'string' ? summary.details.serviceAccountName : undefined
+    const containerNames = typeof summary.details.containers === 'string'
+      ? summary.details.containers.split(',').map((item) => item.trim()).filter(Boolean)
+      : ['app']
+    const port = typeof summary.details.containerPorts === 'string'
+      ? Number(summary.details.containerPorts.match(/\d+/)?.[0] ?? 8080)
+      : 8080
+    const volumeNames = typeof summary.details.volumes === 'string'
+      ? summary.details.volumes.split(',').map((item) => item.trim().split(/[（(]/)[0].trim()).filter(Boolean)
+      : []
+    const isApiServerPod = summary.name.startsWith('api-server-7db6f89f8c')
+    const configVolume = volumeNames.find((name) => name.includes('config')) ?? volumeNames[0]
+    const secretVolume = volumeNames.find((name) => name.includes('secret')) ?? 'credentials'
+    const dataVolume = volumeNames.find((name) => !name.includes('config') && !name.includes('secret')) ?? volumeNames[1]
+    const hasProjectedToken = isApiServerPod
+    const hasTmpVolume = isApiServerPod && summary.name.endsWith('p2m6n')
+    const containersYaml = containerNames.flatMap((containerName, index) => [
+      `    - name: ${containerName}`,
+      `      image: ${image}`,
+      '      imagePullPolicy: IfNotPresent',
+      '      resources:',
+      '        requests:',
+      `          cpu: ${summary.cpuRequest ?? '150m'}`,
+      `          memory: ${summary.memoryRequest ?? '256Mi'}`,
+      '        limits:',
+      `          cpu: ${summary.cpuLimit ?? '500m'}`,
+      `          memory: ${summary.memoryLimit ?? '512Mi'}`,
+      '      env:',
+      '        - name: APP_NAME',
+      `          value: ${summary.labels.app ?? summary.name}`,
+      configVolume ? '        - name: CONFIG_VERSION' : '',
+      configVolume ? '          valueFrom:' : '',
+      configVolume ? '            configMapKeyRef:' : '',
+      configVolume ? `              name: ${summary.labels.app ?? summary.name}-config` : '',
+      configVolume ? '              key: version' : '',
+      secretVolume ? '        - name: API_TOKEN' : '',
+      secretVolume ? '          valueFrom:' : '',
+      secretVolume ? '            secretKeyRef:' : '',
+      secretVolume ? `              name: ${summary.labels.app ?? summary.name}-secret` : '',
+      secretVolume ? '              key: token' : '',
+      port && index === 0 ? '      ports:' : '',
+      port && index === 0 ? '        - name: http' : '',
+      port && index === 0 ? `          containerPort: ${port}` : '',
+      port && index === 0 ? '          protocol: TCP' : '',
+      '      volumeMounts:',
+      configVolume ? `        - name: ${configVolume}` : '',
+      configVolume ? `          mountPath: ${index === 0 ? '/etc/app/config' : '/etc/sidecar/config'}` : '',
+      configVolume ? '          readOnly: true' : '',
+      secretVolume ? `        - name: ${secretVolume}` : '',
+      secretVolume ? `          mountPath: ${index === 0 ? '/etc/app/secret' : '/etc/sidecar/secret'}` : '',
+      secretVolume ? '          readOnly: true' : '',
+      dataVolume ? `        - name: ${dataVolume}` : '',
+      dataVolume ? `          mountPath: ${index === 0 ? '/var/log/app' : '/var/log/sidecar'}` : '',
+      hasProjectedToken ? '        - name: kube-api-access' : '',
+      hasProjectedToken ? '          mountPath: /var/run/secrets/kubernetes.io/serviceaccount' : '',
+      hasProjectedToken ? '          readOnly: true' : '',
+      hasTmpVolume && index === 0 ? '        - name: tmp-cache' : '',
+      hasTmpVolume && index === 0 ? '          mountPath: /tmp/cache' : ''
+    ])
+    const statusesYaml = containerNames.flatMap((containerName, index) => [
+      `    - name: ${containerName}`,
+      `      image: ${image}`,
+      `      imageID: docker-pullable://${image}@sha256:${index === 0 ? '2bcabc23b45489fb0885d69a06ba1d648aeda973fae7bb981bafbb884165e514' : '9a6f40be72c1a6c98cb47f01d4e8b947c206e4be0ce761e1895edbf74fae1a09'}`,
+      `      containerID: containerd://${index === 0 ? '4d11c8676729b585c9d378ea964965039ca17cb9d2246615be3e722c7d1d86b2' : '8f6d3c91fdc2dd1a8fd672e052b52f571be9ad635efe1dcba7fe0d4e2bb2f043'}`,
+      `      ready: ${summary.status === 'Running' ? 'true' : 'false'}`,
+      `      restartCount: ${summary.restarts ?? 0}`,
+      '      state:',
+      summary.status === 'Running' ? '        running:' : '        waiting:',
+      summary.status === 'Running' ? `          startedAt: "2026-05-30T09:${index ? '17' : '12'}:56+08:00"` : `          reason: ${summary.status}`,
+      summary.details.lastError && summary.status !== 'Running' ? `          message: ${summary.details.lastError}` : ''
+    ])
+    return [
+      `apiVersion: ${summary.apiVersion}`,
+      `kind: ${summary.kind}`,
+      'metadata:',
+      `  name: ${summary.name}`,
+      namespaceLine.trimEnd(),
+      '  labels:',
+      labels || '    app: example',
+      'spec:',
+      serviceAccount ? `  serviceAccountName: ${serviceAccount}` : '',
+      summary.nodeName ? `  nodeName: ${summary.nodeName}` : '',
+      '  containers:',
+      ...containersYaml,
+      volumeNames.length ? '  volumes:' : '',
+      configVolume ? `    - name: ${configVolume}` : '',
+      configVolume ? '      configMap:' : '',
+      configVolume ? `        name: ${summary.labels.app ?? summary.name}-config` : '',
+      secretVolume ? `    - name: ${secretVolume}` : '',
+      secretVolume ? '      secret:' : '',
+      secretVolume ? `        secretName: ${summary.labels.app ?? summary.name}-secret` : '',
+      dataVolume ? `    - name: ${dataVolume}` : '',
+      dataVolume ? '      emptyDir: {}' : '',
+      hasTmpVolume ? '    - name: tmp-cache' : '',
+      hasTmpVolume ? '      emptyDir:' : '',
+      hasTmpVolume ? '        medium: Memory' : '',
+      hasProjectedToken ? '    - name: kube-api-access' : '',
+      hasProjectedToken ? '      projected:' : '',
+      hasProjectedToken ? '        sources:' : '',
+      hasProjectedToken ? '          - serviceAccountToken:' : '',
+      hasProjectedToken ? '              path: token' : '',
+      hasProjectedToken ? '              expirationSeconds: 3607' : '',
+      hasProjectedToken ? '          - configMap:' : '',
+      hasProjectedToken ? '              name: kube-root-ca.crt' : '',
+      hasProjectedToken ? '              items:' : '',
+      hasProjectedToken ? '                - key: ca.crt' : '',
+      hasProjectedToken ? '                  path: ca.crt' : '',
+      hasProjectedToken ? '          - downwardAPI:' : '',
+      hasProjectedToken ? '              items:' : '',
+      hasProjectedToken ? '                - path: namespace' : '',
+      hasProjectedToken ? '                  fieldRef:' : '',
+      hasProjectedToken ? '                    fieldPath: metadata.namespace' : '',
+      'status:',
+      `  phase: ${summary.status === 'CrashLoopBackOff' ? 'Running' : summary.status}`,
+      summary.podIP ? `  podIP: ${summary.podIP}` : '',
+      summary.details.hostIP ? `  hostIP: ${summary.details.hostIP}` : '',
+      summary.details.qosClass ? `  qosClass: ${summary.details.qosClass}` : '',
+      '  conditions:',
+      '    - type: Ready',
+      `      status: ${summary.status === 'Running' ? 'True' : 'False'}`,
+      '    - type: ContainersReady',
+      `      status: ${summary.status === 'Running' ? 'True' : 'False'}`,
+      '    - type: PodScheduled',
+      '      status: "True"',
+      '  containerStatuses:',
+      ...statusesYaml
+    ]
+      .filter(Boolean)
+      .join('\n')
+  }
+  if (summary.kind === 'Deployment') {
+    const replicas = Number(summary.details.desiredReplicas ?? summary.details.replicas ?? 1)
+    const strategy = String(summary.details.strategy ?? 'RollingUpdate')
+    const app = summary.labels.app ?? summary.name
+    const containerNames = typeof summary.details.containers === 'string'
+      ? summary.details.containers.split(',').map((item) => item.trim()).filter(Boolean)
+      : ['app']
+    const image = summary.images?.[0] ?? `ghcr.io/example/${summary.name}:v1.0.0`
+    const port = typeof summary.details.containerPorts === 'string'
+      ? Number(summary.details.containerPorts.match(/\d+/)?.[0] ?? 8080)
+      : 8080
+    const containersYaml = containerNames.flatMap((containerName, index) => [
+      `        - name: ${containerName}`,
+      `          image: ${image}`,
+      '          imagePullPolicy: IfNotPresent',
+      '          resources:',
+      '            requests:',
+      index === 0 ? '              cpu: 150m' : '              cpu: 50m',
+      index === 0 ? '              memory: 256Mi' : '              memory: 64Mi',
+      '            limits:',
+      index === 0 ? '              cpu: 500m' : '              cpu: 200m',
+      index === 0 ? '              memory: 512Mi' : '              memory: 128Mi',
+      '          ports:',
+      `            - name: ${index === 0 ? 'http' : 'metrics'}`,
+      `              containerPort: ${index === 0 ? port : 9090}`,
+      '              protocol: TCP',
+      '          env:',
+      '            - name: APP_NAME',
+      `              value: ${app}`,
+      '          volumeMounts:',
+      '            - name: config',
+      `              mountPath: ${index === 0 ? '/etc/app/config' : '/etc/sidecar/config'}`,
+      '              readOnly: true',
+      index === 0 ? '            - name: credentials' : '',
+      index === 0 ? '              mountPath: /etc/app/secret' : '',
+      index === 0 ? '              readOnly: true' : '',
+      '            - name: logs',
+      `              mountPath: ${index === 0 ? '/var/log/app' : '/var/log/sidecar'}`
+    ])
+    return [
+      `apiVersion: ${summary.apiVersion}`,
+      `kind: ${summary.kind}`,
+      'metadata:',
+      `  name: ${summary.name}`,
+      namespaceLine.trimEnd(),
+      '  labels:',
+      labels || `    app: ${app}`,
+      'spec:',
+      `  replicas: ${replicas}`,
+      '  selector:',
+      '    matchLabels:',
+      `      app: ${app}`,
+      strategy ? '  strategy:' : '',
+      strategy ? `    type: ${strategy}` : '',
+      strategy === 'RollingUpdate' ? '    rollingUpdate:' : '',
+      strategy === 'RollingUpdate' ? `      maxSurge: ${summary.details.maxSurge ?? '25%'}` : '',
+      strategy === 'RollingUpdate' ? `      maxUnavailable: ${summary.details.maxUnavailable ?? '25%'}` : '',
+      summary.details.minReadySeconds !== undefined ? `  minReadySeconds: ${summary.details.minReadySeconds}` : '',
+      summary.details.revisionHistoryLimit !== undefined ? `  revisionHistoryLimit: ${summary.details.revisionHistoryLimit}` : '',
+      summary.details.progressDeadlineSeconds !== undefined ? `  progressDeadlineSeconds: ${summary.details.progressDeadlineSeconds}` : '',
+      summary.details.paused === true ? '  paused: true' : '',
+      '  template:',
+      '    metadata:',
+      '      labels:',
+      `        app: ${app}`,
+      '    spec:',
+      summary.details.serviceAccountName ? `      serviceAccountName: ${summary.details.serviceAccountName}` : '',
+      summary.details.imagePullSecrets ? '      imagePullSecrets:' : '',
+      summary.details.imagePullSecrets ? `        - name: ${summary.details.imagePullSecrets}` : '',
+      '      containers:',
+      ...containersYaml,
+      '      volumes:',
+      '        - name: config',
+      '          configMap:',
+      `            name: ${app}-config`,
+      '        - name: credentials',
+      '          secret:',
+      `            secretName: ${app}-secret`,
+      '        - name: logs',
+      '          emptyDir: {}',
+      'status:',
+      `  observedGeneration: ${summary.details.observedGeneration ?? 1}`,
+      `  replicas: ${replicas}`,
+      `  updatedReplicas: ${summary.details.updatedReplicas ?? replicas}`,
+      `  readyReplicas: ${summary.ready?.split('/')?.[0] ?? replicas}`,
+      `  availableReplicas: ${summary.details.availableReplicas ?? replicas}`,
+      `  unavailableReplicas: ${summary.details.unavailableReplicas ?? 0}`,
+      '  conditions:',
+      '    - type: Available',
+      '      status: "True"',
+      '      reason: MinimumReplicasAvailable',
+      '      message: Deployment has minimum availability.',
+      '    - type: Progressing',
+      '      status: "True"',
+      '      reason: NewReplicaSetAvailable',
+      '      message: ReplicaSet has successfully progressed.'
+    ]
+      .filter(Boolean)
+      .join('\n')
+  }
   const spec = Object.entries(summary.details)
     .map(([key, value]) => `  ${key}: ${JSON.stringify(value)}`)
     .join('\n')

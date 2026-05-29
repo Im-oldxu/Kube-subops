@@ -256,5 +256,6 @@ export interface CreateSchema {
 export interface ParsedYamlResult {
   ok: boolean
   value?: Record<string, unknown>
+  values?: Record<string, unknown>[]
   error?: string
 }

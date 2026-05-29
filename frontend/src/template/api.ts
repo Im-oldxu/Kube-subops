@@ -2,8 +2,10 @@ import axios from 'axios'
 import {
   auditLogs,
   clusterCredentialFormContract,
+  createMockResourcesFromYaml,
   currentUser,
   dashboardStatus,
+  deleteMockResources,
   getHighRiskConfirmMetadata,
   getMockResourceDefinition,
   getMockResourceDefinitionByRoute,
@@ -438,6 +440,7 @@ export async function listResourceSummaries(query: ResourceListQuery): Promise<P
         namespace: query.namespace,
         name: query.name,
         labels: query.labels,
+        nodeName: query.nodeName && query.nodeName !== 'all-nodes' ? query.nodeName : undefined,
         status: query.status,
         sortBy: query.sortBy,
         sortOrder: query.sortOrder,
@@ -648,6 +651,26 @@ export async function performHighRiskAction(action: HighRiskActionRequest): Prom
       }
     }
 
+    if (action.action.endsWith('.delete')) {
+      const deleted = deleteMockResources({
+        clusterId: action.clusterId,
+        resourceType: action.resourceType,
+        namespace: action.namespace,
+        name: action.name,
+        resources: Array.isArray(action.payload?.resources)
+          ? action.payload.resources as Array<{ clusterId?: string; resourceType?: string; namespace?: string; name?: string }>
+          : undefined
+      })
+      return {
+        accepted: true,
+        status: 'recorded',
+        message: deleted > 1 ? `mock 已删除 ${deleted} 个资源。` : 'mock 已删除 1 个资源。',
+        auditId: `audit_mock_${Date.now()}`,
+        affectedResources: [action.name ?? action.resourceType ?? action.action].filter(Boolean),
+        requiresRefresh: true
+      }
+    }
+
     return {
       accepted: true,
       status: 'recorded',
@@ -731,7 +754,10 @@ export async function performHighRiskAction(action: HighRiskActionRequest): Prom
 }
 
 export async function createKubeResource(payload: Record<string, unknown>) {
-  if (isMockEnabled()) return actionResult('资源创建请求已记录。')
+  if (isMockEnabled()) {
+    const count = createMockResourcesFromYaml(payload)
+    return actionResult(count > 1 ? `已创建 ${count} 个模拟资源。` : '已创建 1 个模拟资源。')
+  }
   const clusterId = String(payload.clusterId ?? '')
   const resourceType = String(payload.resourceType ?? '')
   return apiRequest<ActionResult>('post', `/clusters/${encodePathSegment(clusterId)}/resources/${encodePathSegment(resourceType)}`, {

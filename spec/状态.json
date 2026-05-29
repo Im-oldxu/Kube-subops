@@ -2,8 +2,8 @@
   "project_name": "kube-subops",
   "stage": "dev-backend",
   "mode": "new-product",
-  "version": "0.1.2",
-  "last_updated": "2026-05-28",
+  "version": "0.1.3",
+  "last_updated": "2026-05-30",
   "project_type": "fullstack",
   "project_type_history": [
     {
@@ -124,7 +124,7 @@
     "mode": "agent-orchestrated",
     "parallel_strategy": "frontend-first-contract-lock",
     "current_feature": "integration/frontend-contract-lock",
-    "analysis_summary": "当前项目已完成 PRD、架构/API/数据库、UI 交接和 Sub Admin 前端模板基线复制；前端工作包已使用多个子 Agent 完成 Kubernetes 控制台页面、正式导航、service/mock、ViewModel 和高风险确认交互，并已合入 integration/frontend-contract-lock。后续 Deployment 创建表单、Pod 存储卷与普通 / Init 容器 volumeMounts 拆分、容器 SecurityContext 归位、Pod 级 imagePullSecrets 下拉式镜像仓库认证 Secret 多选、Pod 网络、Pod 调度、节点调度、YAML 模板与模式保持、YAML 字号和当前模式徽标等增量已完成 `/check` 复检；Deployment 完整表单 form->yaml->form、Service、ConfigMap、Secret、PVC 往返检查、typecheck 和 build 均通过。当前检查点版本为 v0.1.2，下一步进入 /dev-backend，实现 Go API、SQLite 持久化和 Kubernetes API 代理。",
+    "analysis_summary": "当前项目已完成 PRD、架构/API/数据库、UI 交接和 Sub Admin 前端模板基线复制；前端工作包已使用多个子 Agent 完成 Kubernetes 控制台页面、正式导航、service/mock、ViewModel 和高风险确认交互，并已合入 integration/frontend-contract-lock。后续 Deployment 创建表单、Pod 存储卷与普通 / Init 容器 volumeMounts 拆分、容器 SecurityContext 归位、Pod 级 imagePullSecrets 下拉式镜像仓库认证 Secret 多选、Pod 网络、Pod 调度、节点调度、YAML 模板与模式保持、YAML 字号和当前模式徽标等增量已完成 `/check` 复检；Deployment 完整表单 form->yaml->form、Deployment 详情按官方状态模型重构、Service、ConfigMap、Secret、PVC 往返检查、volumeMounts readOnly 勾选态与 YAML 往返检查、取消勾选清除旧 YAML 保留字段、多文档 YAML 解析、资源切换式表单同步与批量提交、mock 创建写入资源列表和详情 YAML、status=all 过滤修复、创建资源列表摘要携带提交 YAML、页面默认集群与 mock 数据源统一、详情弹窗、详情与编辑 YAML 可读性和字号控制、Deployment 详情策略/副本/Conditions/Pod 模板/关联资源排障字段、关联资源跳转、操作列移除独立 YAML 和工作负载操作单次确认均通过浏览器验证；Pod 已按 Deployment 页面模式完成专项完善，覆盖列表专属列、详情核心字段、v1/Pod 创建表单、Pod YAML 生成/回填和 mock 创建可见验证；Pod 列表已补充 CPU/内存轻量用量条 + 百分比 + hover Usage/Request/Limit 浮层、Pod 名称直达详情、节点跳转 Node 详情、Pod 专属详情概览、详情冗余页签收敛、详情 YAML 可编辑保存、容器详情叠层（详情/环境变量/挂载单容器视角）、Pod 全局挂载页签、容器详情挂载归位、mock 多容器运行时与挂载数据、卷与挂载摘要、Deployment/ReplicaSet 关联推导、Metrics Server 缺失提示、默认隐藏 Namespace/标签、列设置、节点筛选、节点内外网 IP 展示、实时日志入口、选择列与批量删除闭环，并收窄操作列减少无效留白；v0.1.3 进一步补齐 Pod / Deployment 统一监控页签、Chart.js 时间序列图、时间窗口、采样粒度、跨图 hover 联动以及 Metrics Server / Prometheus 数据源提示。typecheck、lint:check、build 均通过；当前环境未安装 Playwright，页面级 Playwright 未执行。当前检查点版本为 v0.1.3，下一步进入 /dev-backend，实现 Go API、SQLite 持久化和 Kubernetes API 代理。",
     "task_count": 3,
     "integration_status": "merged_to_main",
     "fallback_to_serial": false,
@@ -233,8 +233,8 @@
     "需求状态": "已完成（当前版本）",
     "架构状态": "已完成（当前版本）",
     "UI状态": "已完成（当前版本）",
-    "前端开发状态": "已完成（Deployment 表单精简、YAML 编辑模式模板切换、YAML 字号控制、Pod 安全镜像仓库认证 Secret 下拉多选、普通/Init 容器入口、安全配置、Pod 网络、Pod 调度与节点调度布局优化已实现并通过复检）",
-    "前端检查状态": "已通过（v0.1.2，Deployment 完整表单与 YAML 双向同步、Service/ConfigMap/Secret/PVC 往返检查、typecheck/build 均通过）",
+    "前端开发状态": "已完成（Deployment 表单精简、详情按 Pod 模式和 Deployment 语义重构、YAML 编辑模式模板切换、YAML 字号控制、Pod 安全镜像仓库认证 Secret 下拉多选、普通/Init 容器入口、安全配置、Pod 网络、Pod 调度与节点调度布局、详情弹窗、详情/编辑 YAML 可读性与字号控制、详情策略排障字段、操作列单次确认，以及 Pod 列表/详情/创建表单/YAML 双向同步、CPU/内存轻量用量条 + 百分比 + hover Usage/Request/Limit 浮层、Metrics Server 提示、列设置、节点筛选、节点内外网 IP 展示、实时日志入口、选择列、批量删除闭环、操作列收窄、详情冗余页签收敛、详情 YAML 可编辑保存、容器详情叠层、卷与挂载摘要和 Deployment/ReplicaSet 关联推导均已实现并通过复检）",
+    "前端检查状态": "已通过（v0.1.3，Deployment 完整表单与 YAML 双向同步、Deployment 详情按官方状态模型重构、Service/ConfigMap/Secret/PVC 往返检查、Pod 创建表单与 YAML 往返检查、Pod CPU/内存轻量用量条 + 百分比 + hover Usage/Request/Limit 浮层、Metrics Server 提示逻辑、资源表格列设置、Pod 默认隐藏 Namespace/标签、Pod 节点筛选、节点内外网 IP 条件展示、实时日志入口、Pod 批量删除、Pod 操作列收窄、Pod 详情冗余页签收敛、详情 YAML 可编辑保存、容器详情叠层（详情/环境变量/挂载单容器视角）、Pod 全局挂载页签、容器详情挂载归位、mock 多容器运行时与挂载数据、卷与挂载摘要、Deployment/ReplicaSet 关联推导、Pod / Deployment 统一监控页签、Chart.js 时间序列图、时间窗口与采样粒度控制、跨图 hover 联动、Metrics Server / Prometheus 数据源提示、volumeMounts readOnly 往返检查、多文档 YAML 资源切换式表单同步与提交、mock 创建后列表与详情可见、详情弹窗、详情/编辑 YAML 可读性与字号控制、详情策略排障字段、关联 Pod 筛选跳转和操作列单次确认通过验证、typecheck/lint:check/build 均通过；当前环境未安装 Playwright，页面级 Playwright 未执行）",
     "后端开发状态": "未开始",
     "后端检查状态": "未开始",
     "部署状态": "未开始",
@@ -248,3 +248,5 @@
     "secrets": "Environment master key for AES-GCM credential encryption"
   }
 }
+
+

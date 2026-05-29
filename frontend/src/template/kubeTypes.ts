@@ -206,6 +206,12 @@ export interface ResourceSummary {
   restarts?: number
   nodeName?: string
   podIP?: string
+  cpuUsage?: string
+  memoryUsage?: string
+  cpuRequest?: string
+  memoryRequest?: string
+  cpuLimit?: string
+  memoryLimit?: string
   images?: string[]
   capacity?: string
   accessModes?: string[]
@@ -263,6 +269,7 @@ export interface ResourceListQuery extends PageQuery {
   namespace?: string
   name?: string
   labels?: string
+  nodeName?: string
   status?: string
   sortBy?: string
   sortOrder?: 'asc' | 'desc'
